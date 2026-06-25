@@ -1,0 +1,61 @@
+{
+  "expo": {
+    "name": "Settravo",
+    "slug": "settravo",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "assets/images/logo.png",
+    "scheme": "settravo",
+    "userInterfaceStyle": "automatic",
+    "ios": {
+      "supportsTablet": true,
+      "config": {
+        "usesNonExemptEncryption": false
+      }
+    },
+    "android": {
+      "predictiveBackGestureEnabled": false,
+      "permissions": [
+        "android.permission.CAMERA"
+      ],
+      "package": "com.sapphirepegasus.settravo"
+    },
+    "web": {
+      "output": "server",
+      "bundler": "metro"
+    },
+    "plugins": [
+      [
+        "expo-camera",
+        {
+          "cameraPermission": "Allow Settravo to access your camera to scan join QR codes.",
+          "microphonePermission": false,
+          "recordAudioAndroid": false,
+          "barcodeScannerEnabled": true
+        }
+      ],
+      "expo-router",
+      [
+        "expo-splash-screen",
+        {
+          "android": {
+            "image": "./assets/images/logo.png"
+          }
+        }
+      ],
+      "expo-secure-store",
+      "expo-sqlite"
+    ],
+    "experiments": {
+      "typedRoutes": true,
+      "reactCompiler": true
+    },
+    "extra": {
+      "router": {},
+      "eas": {
+        "projectId": "0a6e366a-3d84-4bd0-9a50-cad101219ce7"
+      }
+    },
+    "owner": "pegasus3000"
+  }
+}

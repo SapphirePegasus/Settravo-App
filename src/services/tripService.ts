@@ -1,0 +1,222 @@
+/**
+ * tripService.ts
+ *
+ * All trip-related Supabase operations.
+ *
+ * Rules:
+ *  - createTrip and joinTrip → Edge Function "trip-action" (rate limiting + atomic write)
+ *  - fetch/read ops → direct Supabase (RLS is the gate, no mutation risk)
+ *  - All inputs Zod-validated before any network call
+ *  - Returns domain types only — raw DB rows never leave this file
+ */
+
+import { supabase } from '../lib/supabase';
+import type { Member, Trip } from '../types/domain';
+import type { Database } from '../types/supabase';
+import { generateExpiresAt, generateJoinCode } from '../utils/joinCode';
+import {
+    CreateTripSchema,
+    JoinTripSchema,
+    type CreateTripInput,
+    type JoinTripInput,
+} from '../validation/schemas';
+
+type TripRow = Database['public']['Tables']['TravelAppTrips']['Row'];
+type MemberRow = Database['public']['Tables']['TravelAppMembers']['Row'];
+
+function mapTrip(row: TripRow): Trip {
+    return {
+        id: row.id,
+        name: row.name,
+        destination: row.destination,
+        startDate: row.start_date,
+        endDate: row.end_date,
+        createdByDevice: row.created_by_device,
+        createdAt: row.created_at,
+        joinCode: row.join_code,
+        joinCodeExpiresAt: row.join_code_expires_at,
+    };
+}
+
+function mapMember(row: MemberRow): Member {
+    return {
+        id: row.id,
+        tripId: row.trip_id,
+        deviceId: row.device_id,
+        displayName: row.display_name,
+        joinedAt: row.joined_at,
+        guestToken: row.guest_token,
+        isGuest: row.device_id === null,
+    };
+}
+
+/**
+ * Generate a RFC 4122 v4 UUID.
+ * Uses crypto.randomUUID() when available (Hermes RN 0.73+, Expo 50+).
+ * Falls back to a manual implementation using crypto.getRandomValues()
+ * which IS available in all Hermes versions.
+ * The fallback produces a spec-compliant v4 UUID string.
+ */
+function generateUUID(): string {
+    if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
+        return crypto.randomUUID();
+    }
+
+    // RFC 4122 v4 UUID via getRandomValues — always available in Hermes/Expo
+    const bytes = new Uint8Array(16);
+    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
+        crypto.getRandomValues(bytes);
+    } else {
+        // Last-resort: Math.random (should never hit this in Expo)
+        for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+    }
+
+    // Set version bits: version 4 (0100xxxx)
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    // Set variant bits: RFC 4122 (10xxxxxx)
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+
+    const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0'));
+    return [
+        hex.slice(0, 4).join(''),
+        hex.slice(4, 6).join(''),
+        hex.slice(6, 8).join(''),
+        hex.slice(8, 10).join(''),
+        hex.slice(10, 16).join(''),
+    ].join('-');
+}
+
+/**
+ * Create a new trip. Routes through the "trip-action" Edge Function
+ * which atomically inserts the trip + the creator as first member.
+ */
+export async function createTrip(
+    input: CreateTripInput,
+    creatorDisplayName: string,
+): Promise<Trip> {
+    const validated = CreateTripSchema.parse(input);
+    const joinCode = generateJoinCode();
+    const joinCodeExpiresAt = generateExpiresAt();
+
+    const { data, error } = await supabase.functions.invoke<{ trip: TripRow }>('trip-action', {
+        body: {
+            action: 'create',
+            payload: {
+                name: validated.name,
+                destination: validated.destination ?? null,
+                start_date: validated.startDate ?? null,
+                end_date: validated.endDate ?? null,
+                join_code: joinCode,
+                join_code_expires_at: joinCodeExpiresAt,
+                creator_display_name: creatorDisplayName,
+            },
+        },
+    });
+
+    if (error) throw new Error(`[tripService] createTrip failed: ${error.message}`);
+    if (!data?.trip) throw new Error('[tripService] createTrip: no trip data returned');
+    return mapTrip(data.trip);
+}
+
+/**
+ * Join an existing trip by 6-char join code.
+ * Edge Function validates code TTL, duplicate membership, and handles guest claim.
+ */
+export async function joinTrip(input: JoinTripInput): Promise<Trip> {
+    const validated = JoinTripSchema.parse(input);
+
+    const { data, error } = await supabase.functions.invoke<{ trip: TripRow }>('trip-action', {
+        body: {
+            action: 'join',
+            payload: {
+                join_code: validated.joinCode,
+                display_name: validated.displayName,
+            },
+        },
+    });
+
+    if (error) throw new Error(error.message ?? '[tripService] joinTrip failed');
+    if (!data?.trip) throw new Error('[tripService] joinTrip: no trip data returned');
+    return mapTrip(data.trip);
+}
+
+/** Fetch all trips this device has joined (RLS scoped). */
+export async function fetchMyTrips(): Promise<Trip[]> {
+    const { data, error } = await supabase
+        .from('TravelAppTrips')
+        .select('*')
+        .order('created_at', { ascending: false });
+
+    if (error) throw new Error(`[tripService] fetchMyTrips failed: ${error.message}`);
+    return (data ?? []).map(mapTrip);
+}
+
+/** Fetch a single trip. Returns null if not found or not a member (RLS). */
+export async function getTrip(tripId: string): Promise<Trip | null> {
+    const { data, error } = await supabase
+        .from('TravelAppTrips')
+        .select('*')
+        .eq('id', tripId)
+        .maybeSingle();
+
+    if (error) throw new Error(`[tripService] getTrip failed: ${error.message}`);
+    return data ? mapTrip(data) : null;
+}
+
+/** Fetch all members of a trip (RLS: caller must be a member). */
+export async function getTripMembers(tripId: string): Promise<Member[]> {
+    const { data, error } = await supabase
+        .from('TravelAppMembers')
+        .select('*')
+        .eq('trip_id', tripId)
+        .order('joined_at', { ascending: true });
+
+    if (error) throw new Error(`[tripService] getTripMembers failed: ${error.message}`);
+    return (data ?? []).map(mapMember);
+}
+
+/**
+ * Regenerate join code (creator only — RLS "creator can update their trip" enforces this).
+ * Issues a new 6-char code with a fresh 30-min TTL.
+ */
+export async function regenerateJoinCode(tripId: string): Promise<Trip> {
+    const { data, error } = await supabase
+        .from('TravelAppTrips')
+        .update({
+            join_code: generateJoinCode(),
+            join_code_expires_at: generateExpiresAt(),
+        })
+        .eq('id', tripId)
+        .select()
+        .single();
+
+    if (error) throw new Error(`[tripService] regenerateJoinCode failed: ${error.message}`);
+    return mapTrip(data);
+}
+
+/**
+ * Add a guest member (by name, no device). Generates a spec-compliant
+ * UUID v4 guest_token for the shareable per-member web URL (Phase 4).
+ *
+ * Uses crypto.randomUUID() when available, with a getRandomValues-based
+ * fallback that always produces a valid UUID — never a malformed string
+ * that Postgres would reject with "invalid input syntax for type uuid".
+ */
+export async function addGuestMember(
+    tripId: string,
+    displayName: string,
+): Promise<Member> {
+    const { data, error } = await supabase
+        .from('TravelAppMembers')
+        .insert({
+            trip_id: tripId,
+            device_id: null,
+            display_name: displayName.trim(),
+            guest_token: generateUUID(),
+        })
+        .select()
+        .single();
+
+    if (error) throw new Error(`[tripService] addGuestMember failed: ${error.message}`);
+    return mapMember(data);
+}
