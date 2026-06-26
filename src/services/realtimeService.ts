@@ -25,12 +25,19 @@
  *    Do this once in the Supabase SQL editor. Without it, no change events fire.
  */
 
+/**
+ * realtimeService.ts — Supabase Realtime subscription for a single trip.
+ *
+ * Changes vs previous version:
+ *  - Calls setChannelMounted(true) on subscribe start, setChannelMounted(false)
+ *    on teardown, so the ConnectionBanner only appears when a channel is
+ *    actually expected to be live (fixes persistent "Reconnecting" on home screen).
+ */
+
 import type { RealtimeChannel } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useExpenseStore } from '../stores/expenseStore';
-
-// ─── Backoff config ───────────────────────────────────────────────────────────
 
 const BACKOFF_BASE_MS = 3_000;
 const BACKOFF_MULTIPLIER = 2;
@@ -41,16 +48,10 @@ function backoffDelay(attempt: number): number {
     return Math.min(BACKOFF_BASE_MS * Math.pow(BACKOFF_MULTIPLIER, attempt), BACKOFF_CAP_MS);
 }
 
-// ─── Public API ───────────────────────────────────────────────────────────────
-
 export interface RealtimeSubscription {
     unsubscribe: () => void;
 }
 
-/**
- * Subscribe to expense and split changes for a trip.
- * Returns an unsubscribe function — call it on screen unmount.
- */
 export function subscribeToTrip(tripId: string): RealtimeSubscription {
     let channel: RealtimeChannel | null = null;
     let attempt = 0;
@@ -58,8 +59,11 @@ export function subscribeToTrip(tripId: string): RealtimeSubscription {
     let isTornDown = false;
     let backoffTimer: ReturnType<typeof setTimeout> | null = null;
 
-    const { setRealtimeStatus } = useConnectionStore.getState();
+    const { setRealtimeStatus, setChannelMounted } = useConnectionStore.getState();
     const { applyExpensePatch, applySplitPatch } = useExpenseStore.getState();
+
+    // Signal that a channel is actively mounted
+    setChannelMounted(true);
 
     function clearBackoffTimer() {
         if (backoffTimer !== null) {
@@ -82,7 +86,6 @@ export function subscribeToTrip(tripId: string): RealtimeSubscription {
 
         channel = supabase
             .channel(`trip:${tripId}`)
-            // Listen to all expense changes for this trip
             .on(
                 'postgres_changes',
                 {
@@ -92,13 +95,10 @@ export function subscribeToTrip(tripId: string): RealtimeSubscription {
                     filter: `trip_id=eq.${tripId}`,
                 },
                 (payload) => {
-                    // Reset backoff on successful message
                     attempt = 0;
                     applyExpensePatch(tripId, payload);
                 },
             )
-            // Listen to all split changes (filtered via expense join — no direct trip_id on splits)
-            // We listen to all split events and let the store filter by known expense IDs.
             .on(
                 'postgres_changes',
                 {
@@ -121,8 +121,6 @@ export function subscribeToTrip(tripId: string): RealtimeSubscription {
                     return;
                 }
 
-                // CHANNEL_ERROR and CLOSED fire for the same disconnect incident.
-                // Guard with isReconnecting to schedule only ONE backoff timer.
                 if (
                     (status === 'CHANNEL_ERROR' || status === 'CLOSED') &&
                     !isReconnecting
@@ -136,7 +134,7 @@ export function subscribeToTrip(tripId: string): RealtimeSubscription {
 
                     if (attempt >= MAX_RETRIES) {
                         console.error(
-                            `[realtimeService] Max retries (${MAX_RETRIES}) reached for trip:${tripId}. Giving up.`,
+                            `[realtimeService] Max retries (${MAX_RETRIES}) reached for trip:${tripId}.`,
                         );
                         setRealtimeStatus('disconnected');
                         return;
@@ -144,10 +142,6 @@ export function subscribeToTrip(tripId: string): RealtimeSubscription {
 
                     const delay = backoffDelay(attempt);
                     attempt += 1;
-
-                    console.log(
-                        `[realtimeService] Reconnecting in ${delay}ms (attempt ${attempt}/${MAX_RETRIES})`,
-                    );
 
                     backoffTimer = setTimeout(() => {
                         if (isTornDown) return;
@@ -158,12 +152,11 @@ export function subscribeToTrip(tripId: string): RealtimeSubscription {
                 }
 
                 if (status === 'TIMED_OUT') {
-                    console.warn('[realtimeService] Channel timed out — will retry on next status change.');
+                    console.warn('[realtimeService] Channel timed out.');
                 }
             });
     }
 
-    // Start the initial connection
     connect();
 
     return {
@@ -172,6 +165,7 @@ export function subscribeToTrip(tripId: string): RealtimeSubscription {
             clearBackoffTimer();
             removeCurrentChannel();
             setRealtimeStatus('disconnected');
+            setChannelMounted(false); // ← KEY FIX: banner disappears on home screen
         },
     };
 }

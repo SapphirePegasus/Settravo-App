@@ -1,23 +1,21 @@
 /**
  * authService.ts
  *
- * Handles the complete anonymous identity lifecycle:
+ * Handles the complete anonymous identity lifecycle.
  *
- *  1. On first launch: call signInAnonymously() → Supabase issues a JWT.
- *     The JWT sub (auth.uid()) becomes the device's permanent identity.
- *  2. Store the device UUID in expo-secure-store (encrypted at rest).
- *  3. Create a row in TravelAppUsers linking the auth.uid() to the UUID.
- *  4. On subsequent launches: restore the session from the localStorage
- *     polyfill. SecureStore confirms the UUID hasn't been tampered with.
+ * Offline-first boot strategy:
+ *  - User profile (DeviceUser) is cached in SecureStore as JSON.
+ *  - On boot, if a Supabase session exists in local storage AND a cached
+ *    profile exists, we return the cached profile immediately — no network
+ *    call required. This makes the app fully functional offline on relaunch.
+ *  - A background refresh from Supabase runs after boot to sync the profile.
+ *  - Only on true first launch (no session, no cache) is a network call required.
  *
  * Security model:
  *  - The Supabase JWT is the auth token. All RLS policies check auth.uid().
- *  - The device UUID in SecureStore is a secondary binding: if SecureStore
- *    is cleared (device wipe, uninstall on Android), we treat this as a
- *    new device and issue a new identity.
- *  - We never call supabase.auth.getUser() in a polling loop — that would
- *    interfere with the SDK's internal token refresh cycle. Listen to
- *    onAuthStateChange instead.
+ *  - Device UUID in SecureStore is a secondary binding.
+ *  - We never poll supabase.auth.getUser() — that interferes with the SDK's
+ *    internal token refresh cycle.
  */
 
 import * as SecureStore from 'expo-secure-store';
@@ -28,12 +26,10 @@ import { RegisterDeviceSchema } from '../validation/schemas';
 
 type UserRow = Database['public']['Tables']['TravelAppUsers']['Row'];
 
-// ─── SecureStore key ─────────────────────────────────────────────────────────
-
-/** The key under which the device UUID is stored in SecureStore. */
 const SECURE_DEVICE_UUID_KEY = 'settravo_device_uuid';
+const SECURE_USER_CACHE_KEY = 'settravo_user_cache';
 
-// ─── Mappers ─────────────────────────────────────────────────────────────────
+// ─── Mappers ──────────────────────────────────────────────────────────────────
 
 function mapRowToDomain(row: UserRow): DeviceUser {
     return {
@@ -46,63 +42,87 @@ function mapRowToDomain(row: UserRow): DeviceUser {
     };
 }
 
+// ─── Cache helpers ────────────────────────────────────────────────────────────
+
+async function writeCachedUser(user: DeviceUser): Promise<void> {
+    try {
+        await SecureStore.setItemAsync(SECURE_USER_CACHE_KEY, JSON.stringify(user));
+    } catch {
+        // Non-fatal — cache is best-effort
+    }
+}
+
+async function readCachedUser(): Promise<DeviceUser | null> {
+    try {
+        const raw = await SecureStore.getItemAsync(SECURE_USER_CACHE_KEY);
+        if (!raw) return null;
+        return JSON.parse(raw) as DeviceUser;
+    } catch {
+        return null;
+    }
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
- * Full initialization sequence. Call once on app startup, before rendering
- * any authenticated screens. Returns the DeviceUser on success.
+ * Full initialization sequence. Returns DeviceUser on success.
  *
- * Sequence:
- *  1. Check for an existing Supabase session (persisted across restarts).
- *  2. If no session: call signInAnonymously().
- *  3. Verify or create the TravelAppUsers row for auth.uid().
- *  4. Confirm the device UUID in SecureStore matches. If missing (e.g. Android
- *     reinstall), upsert with the current auth.uid() as the new UUID.
+ * Offline-first: if a session + cached profile both exist, returns the
+ * cached profile immediately without any network call. Background-refreshes
+ * the profile from the DB afterwards.
+ *
+ * Network-required: only on true first launch (no persisted session).
  */
 export async function initializeDeviceIdentity(): Promise<DeviceUser> {
-    // Step 1: Get or create Supabase session
+    // Step 1: Check for an existing local session (reads from SDK's AsyncStorage — no network)
     const { data: sessionData } = await supabase.auth.getSession();
     let session = sessionData.session;
 
-    if (!session) {
-        // First launch or session was cleared
+    if (session) {
+        // Returning user — try the cache first for offline-safe boot
+        const cached = await readCachedUser();
+        if (cached && cached.id === session.user.id) {
+            // Serve cached immediately. Background-refresh profile from DB.
+            refreshProfileInBackground(session.user.id);
+            return cached;
+        }
+        // Cache miss or stale — fall through to network fetch
+    } else {
+        // First launch or session was cleared — network required
         const { data, error } = await supabase.auth.signInAnonymously();
         if (error || !data.session) {
-            throw new Error(`[authService] signInAnonymously failed: ${error?.message ?? 'no session returned'}`);
+            throw new Error(
+                `[authService] signInAnonymously failed: ${error?.message ?? 'no session returned'}`,
+            );
         }
         session = data.session;
     }
 
     const authUid = session.user.id;
 
-    // Step 2: Check SecureStore for existing device UUID
+    // Step 2: Ensure SecureStore UUID exists
     let storedUuid = await SecureStore.getItemAsync(SECURE_DEVICE_UUID_KEY);
 
-    // Step 3: Validate or create TravelAppUsers row
+    // Step 3: Fetch or create TravelAppUsers row
     const existingUser = await fetchUserRow(authUid);
 
     if (existingUser) {
-        // Row exists. If SecureStore UUID is missing (Android uninstall scenario),
-        // restore it from the DB row.
         if (!storedUuid) {
             await SecureStore.setItemAsync(SECURE_DEVICE_UUID_KEY, existingUser.device_uuid);
-            storedUuid = existingUser.device_uuid;
         }
-
-        // Update last_seen on every launch (best-effort, no throw on failure)
+        // Update last_seen (best-effort, never blocks)
         void supabase
             .from('TravelAppUsers')
             .update({ last_seen: new Date().toISOString() })
             .eq('id', authUid);
 
-        return mapRowToDomain(existingUser);
+        const user = mapRowToDomain(existingUser);
+        await writeCachedUser(user);
+        return user;
     }
 
-    // Step 4: No row yet — first-ever sign in. Create the user record.
-    // The device UUID is the auth.uid() itself (they are the same identity).
+    // Step 4: First-ever sign in — create the user record
     const deviceUuid = authUid;
-
-    // Validate before writing
     RegisterDeviceSchema.parse({ deviceUuid });
 
     const { data: newUser, error: insertError } = await supabase
@@ -120,15 +140,15 @@ export async function initializeDeviceIdentity(): Promise<DeviceUser> {
         throw new Error(`[authService] Failed to create user record: ${insertError?.message}`);
     }
 
-    // Persist UUID to SecureStore
     await SecureStore.setItemAsync(SECURE_DEVICE_UUID_KEY, deviceUuid);
-
-    return mapRowToDomain(newUser);
+    const user = mapRowToDomain(newUser);
+    await writeCachedUser(user);
+    return user;
 }
 
 /**
  * Update the display name for the current device user.
- * Validates input before writing to Supabase.
+ * Writes through to the cache on success.
  */
 export async function updateDisplayName(
     userId: string,
@@ -147,25 +167,19 @@ export async function updateDisplayName(
         throw new Error(`[authService] Failed to update display name: ${error?.message}`);
     }
 
-    return mapRowToDomain(data);
+    const user = mapRowToDomain(data);
+    await writeCachedUser(user);
+    return user;
 }
 
-/**
- * Returns the device UUID from SecureStore.
- * Returns null if not yet set (should only happen before initializeDeviceIdentity runs).
- */
 export async function getStoredDeviceUuid(): Promise<string | null> {
     return SecureStore.getItemAsync(SECURE_DEVICE_UUID_KEY);
 }
 
-/**
- * Sign out and clear the local session.
- * WARNING: Anonymous users cannot recover their session after sign-out.
- * Only call this if the user explicitly wants to reset their identity.
- */
 export async function signOutAndReset(): Promise<void> {
     await supabase.auth.signOut();
     await SecureStore.deleteItemAsync(SECURE_DEVICE_UUID_KEY);
+    await SecureStore.deleteItemAsync(SECURE_USER_CACHE_KEY);
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -177,9 +191,40 @@ async function fetchUserRow(authUid: string): Promise<UserRow | null> {
         .eq('id', authUid)
         .maybeSingle();
 
-    if (error) {
-        throw new Error(`[authService] Failed to fetch user row: ${error.message}`);
-    }
-
+    if (error) throw new Error(`[authService] Failed to fetch user row: ${error.message}`);
     return data;
+}
+
+/**
+ * Silently refresh profile from DB and update the cache.
+ * Called after a cache-hit boot. Never throws — errors are swallowed.
+ */
+function refreshProfileInBackground(authUid: string): void {
+    fetchUserRow(authUid)
+        .then(async (row) => {
+            if (!row) return;
+            const user = mapRowToDomain(row);
+            await writeCachedUser(user);
+            // Also update last_seen
+            void supabase
+                .from('TravelAppUsers')
+                .update({ last_seen: new Date().toISOString() })
+                .eq('id', authUid);
+            // Patch the live authStore so display name stays fresh
+            // (imported lazily to avoid circular dep at module level)
+            const { useAuthStore } = await import('../stores/authStore');
+            const current = useAuthStore.getState().deviceUser;
+            if (current && current.id === authUid) {
+                // Only patch if something actually changed
+                if (
+                    current.displayName !== user.displayName ||
+                    current.avatarColor !== user.avatarColor
+                ) {
+                    useAuthStore.setState({ deviceUser: user });
+                }
+            }
+        })
+        .catch((err) => {
+            console.warn('[authService] Background profile refresh failed:', err);
+        });
 }

@@ -8,7 +8,7 @@
  *     CameraView + onBarcodeScanned silently disables on iOS EAS builds
  *     (github.com/expo/expo/issues/44491).
  *
- *  2. Manual code entry — 6-char input with auto-uppercase.
+ *  2. Manual code entry — 4-char input with auto-uppercase.
  *
  * QR payload format: "settravo://join?code=XXXXXX"
  * This lets us deep-link directly from a browser share too.
@@ -51,9 +51,9 @@ export default function JoinScreen() {
     const handleCodeFromScan = useCallback((raw: string) => {
         let extracted = raw.trim().toUpperCase();
         if (extracted.startsWith(QR_PREFIX.toUpperCase())) {
-            extracted = extracted.slice(QR_PREFIX.length).substring(0, 6);
+            extracted = extracted.slice(QR_PREFIX.length).substring(0, 4);
         }
-        if (/^[A-Z0-9]{6}$/.test(extracted)) {
+        if (/^[A-Z0-9]{4}$/.test(extracted)) {
             setCode(extracted);
         } else {
             setError('Could not read a valid join code from this QR code.');
@@ -79,8 +79,8 @@ export default function JoinScreen() {
     const handleJoin = useCallback(async () => {
         if (!deviceUser?.displayName) return;
         const trimmed = code.trim().toUpperCase();
-        if (trimmed.length !== 6) {
-            setError('Join code must be exactly 6 characters.');
+        if (trimmed.length !== 4) {
+            setError('Join code must be exactly 4 characters.');
             return;
         }
 
@@ -110,7 +110,7 @@ export default function JoinScreen() {
             <View style={styles.content}>
                 <Text style={[styles.heading, { color: colors.text }]}>Join a Trip</Text>
                 <Text style={[styles.sub, { color: colors.subText }]}>
-                    Scan the QR code from the trip creator, or type the 6-character code.
+                    Scan the QR code from the trip creator, or type the 4-character code.
                 </Text>
 
                 {/* QR scan button */}
@@ -135,16 +135,16 @@ export default function JoinScreen() {
                         styles.codeInput,
                         { backgroundColor: colors.inputBg, color: colors.text, borderColor: error ? colors.error : colors.border },
                     ]}
-                    placeholder="E.g. DUARS6"
+                    placeholder="E.g. ABC3"
                     placeholderTextColor={colors.placeholder}
                     value={code}
                     onChangeText={(v) => {
-                        setCode(v.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6));
+                        setCode(v.toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 4));
                         if (error) setError(null);
                     }}
                     autoCapitalize="characters"
                     autoCorrect={false}
-                    maxLength={6}
+                    maxLength={4}
                     returnKeyType="go"
                     onSubmitEditing={handleJoin}
                     editable={!loading}
@@ -155,9 +155,9 @@ export default function JoinScreen() {
                 ) : null}
 
                 <Pressable
-                    style={[styles.joinButton, { backgroundColor: colors.accent, opacity: loading || code.length < 6 ? 0.6 : 1 }]}
+                    style={[styles.joinButton, { backgroundColor: colors.accent, opacity: loading || code.length < 4 ? 0.6 : 1 }]}
                     onPress={handleJoin}
-                    disabled={loading || code.length < 6}
+                    disabled={loading || code.length < 4}
                 >
                     {loading ? (
                         <ActivityIndicator color="#fff" />

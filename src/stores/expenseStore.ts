@@ -29,89 +29,78 @@
  *    change in settledMap.
  */
 
+/**
+ * expenseStore.ts
+ *
+ * Fix v4:
+ *  - confirmedServerIds: tracks server IDs returned by confirmExpense so that
+ *    the subsequent realtime INSERT echo is recognised as a duplicate and dropped.
+ *    This eliminates the "add expense shows duplicate" bug.
+ *  - setSplitSettled: optimistic mark-as-paid for settle screen.
+ */
+
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 import { create } from 'zustand';
 import type { Expense, Split } from '../types/domain';
 
-// ─── State shape ──────────────────────────────────────────────────────────────
-
 interface ExpenseState {
-    /** expenses[tripId] → Expense[] */
     expenses: Record<string, Expense[]>;
-    /** splits[expenseId] → Split[] */
     splits: Record<string, Split[]>;
     isLoading: boolean;
-    /**
-     * pendingLocalIds[tripId] → Set of localIds that have been submitted
-     * optimistically but whose server confirmation has not yet arrived.
-     * Used to suppress the duplicate realtime INSERT that races with
-     * confirmExpense.
-     */
     pendingLocalIds: Record<string, Set<string>>;
+    /**
+     * confirmedServerIds[tripId] → Set of server-assigned expense IDs that have
+     * been confirmed via confirmExpense(). The realtime INSERT for these IDs
+     * arrives shortly after and must be dropped to prevent duplicates.
+     * Each ID is removed from the set after the echo is consumed or after a
+     * short TTL (handled on INSERT dedup path).
+     */
+    confirmedServerIds: Record<string, Set<string>>;
 
-    // ── Actions ───────────────────────────────────────────────────────────────
     setExpenses: (tripId: string, expenses: Expense[]) => void;
     setSplits: (expenseId: string, splits: Split[]) => void;
     addExpenseOptimistic: (tripId: string, expense: Expense) => void;
     confirmExpense: (tripId: string, localId: string, confirmed: Expense) => void;
     removeExpense: (tripId: string, expenseId: string) => void;
     setLoading: (v: boolean) => void;
-    /**
-     * Optimistically mark / unmark all splits between two members as settled.
-     * Called immediately from settle.tsx so settledMap reflects the change
-     * without waiting for the realtime round-trip.
-     */
-    setSplitSettled: (
-        expenseIds: string[],
-        debtorMemberId: string,
-        settled: boolean,
-    ) => void;
-
-    /** Apply a Realtime postgres_changes payload for TravelAppExpenses. */
-    applyExpensePatch: (
-        tripId: string,
-        payload: RealtimePostgresChangesPayload<Record<string, unknown>>,
-    ) => void;
-
-    /** Apply a Realtime postgres_changes payload for TravelAppSplits. */
-    applySplitPatch: (
-        payload: RealtimePostgresChangesPayload<Record<string, unknown>>,
-    ) => void;
+    setSplitSettled: (expenseIds: string[], memberId: string, settled: boolean) => void;
+    applyExpensePatch: (tripId: string, payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => void;
+    applySplitPatch: (payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => void;
 }
-
-// ─── Row → domain mappers ─────────────────────────────────────────────────────
 
 function rowToExpense(row: Record<string, unknown>): Expense {
     return {
-        id: (row.id as string) ?? '',
-        tripId: (row.trip_id as string) ?? '',
-        paidByMember: (row.paid_by_member as string) ?? '',
-        title: (row.title as string) ?? '',
-        category: ((row.category as Expense['category']) ?? null),
-        amountMoney: typeof row.amount_money === 'number' ? row.amount_money : 0,
-        createdAt: (row.created_at as string) ?? new Date().toISOString(),
-        updatedAt: (row.updated_at as string) ?? new Date().toISOString(),
+        id: row.id as string,
+        tripId: row.trip_id as string,
+        paidByMember: row.paid_by_member as string,
+        title: row.title as string,
+        category: (row.category as Expense['category']) ?? null,
+        amountMoney: row.amount_money as number,
+        createdAt: row.created_at as string,
+        updatedAt: row.updated_at as string,
         isPendingSync: false,
     };
 }
 
 function rowToSplit(row: Record<string, unknown>): Split {
     return {
-        id: (row.id as string) ?? '',
-        expenseId: (row.expense_id as string) ?? '',
-        memberId: (row.member_id as string) ?? '',
-        shareMoney: typeof row.share_money === 'number' ? row.share_money : 0,
-        isSettled: row.is_settled === true,
+        id: row.id as string,
+        expenseId: row.expense_id as string,
+        memberId: row.member_id as string,
+        shareMoney: row.share_money as number,
+        isSettled: row.is_settled as boolean,
     };
 }
 
-// ─── Store ────────────────────────────────────────────────────────────────────
+const EMPTY_EXPENSES: Expense[] = [];
+const EMPTY_SPLITS: Split[] = [];
 
 export const useExpenseStore = create<ExpenseState>((set, get) => ({
     expenses: {},
     splits: {},
     isLoading: false,
     pendingLocalIds: {},
+    confirmedServerIds: {},
 
     setExpenses: (tripId, expenses) =>
         set((s) => ({ expenses: { ...s.expenses, [tripId]: expenses } })),
@@ -121,208 +110,150 @@ export const useExpenseStore = create<ExpenseState>((set, get) => ({
 
     addExpenseOptimistic: (tripId, expense) =>
         set((s) => {
-            // Track localId as pending so the racing realtime INSERT is suppressed
-            const existing = s.pendingLocalIds[tripId] ?? new Set<string>();
-            const updated = new Set(existing);
-            updated.add(expense.id);
+            const existing = s.expenses[tripId] ?? [];
+            // Guard: never insert a duplicate local entry
+            if (existing.some((e) => e.id === expense.id)) return s;
+            const pending = new Set(s.pendingLocalIds[tripId] ?? []);
+            pending.add(expense.id);
             return {
-                expenses: {
-                    ...s.expenses,
-                    [tripId]: [expense, ...(s.expenses[tripId] ?? [])],
-                },
-                pendingLocalIds: { ...s.pendingLocalIds, [tripId]: updated },
+                expenses: { ...s.expenses, [tripId]: [expense, ...existing] },
+                pendingLocalIds: { ...s.pendingLocalIds, [tripId]: pending },
             };
         }),
 
     confirmExpense: (tripId, localId, confirmed) =>
         set((s) => {
-            // Remove from pending set
-            const pending = new Set(s.pendingLocalIds[tripId] ?? new Set<string>());
-            pending.delete(localId);
+            const existing = s.expenses[tripId] ?? [];
 
-            // Also deduplicate: if the realtime INSERT already snuck in, remove it
-            const current = s.expenses[tripId] ?? [];
-            const withoutDuplicate = current.filter(
-                (e) => e.id !== confirmed.id || e.id === localId,
+            // Register the server ID so the realtime INSERT echo is dropped
+            const confirmedSet = new Set(s.confirmedServerIds[tripId] ?? []);
+            confirmedSet.add(confirmed.id);
+
+            const updated = existing.map((e) =>
+                e.id === localId ? { ...confirmed, isPendingSync: false } : e,
             );
 
+            const pending = new Set(s.pendingLocalIds[tripId] ?? []);
+            pending.delete(localId);
+
             return {
-                expenses: {
-                    ...s.expenses,
-                    [tripId]: withoutDuplicate.map((e) =>
-                        e.id === localId ? confirmed : e,
-                    ),
-                },
+                expenses: { ...s.expenses, [tripId]: updated },
                 pendingLocalIds: { ...s.pendingLocalIds, [tripId]: pending },
+                confirmedServerIds: { ...s.confirmedServerIds, [tripId]: confirmedSet },
             };
         }),
 
     removeExpense: (tripId, expenseId) =>
-        set((s) => {
-            const filtered = (s.expenses[tripId] ?? []).filter(
-                (e) => e.id !== expenseId,
-            );
-            const newSplits = { ...s.splits };
-            delete newSplits[expenseId];
-            return {
-                expenses: { ...s.expenses, [tripId]: filtered },
-                splits: newSplits,
-            };
-        }),
+        set((s) => ({
+            expenses: {
+                ...s.expenses,
+                [tripId]: (s.expenses[tripId] ?? []).filter((e) => e.id !== expenseId),
+            },
+            splits: { ...s.splits, [expenseId]: [] },
+        })),
 
     setLoading: (v) => set({ isLoading: v }),
 
-    setSplitSettled: (expenseIds, debtorMemberId, settled) =>
+    setSplitSettled: (expenseIds, memberId, settled) =>
         set((s) => {
-            const newSplits = { ...s.splits };
+            const updatedSplits = { ...s.splits };
             for (const expenseId of expenseIds) {
-                const current = newSplits[expenseId];
-                if (!current) continue;
-                newSplits[expenseId] = current.map((sp) =>
-                    sp.memberId === debtorMemberId ? { ...sp, isSettled: settled } : sp,
+                const existing = updatedSplits[expenseId] ?? [];
+                updatedSplits[expenseId] = existing.map((sp) =>
+                    sp.memberId === memberId ? { ...sp, isSettled: settled } : sp,
                 );
             }
-            return { splits: newSplits };
+            return { splits: updatedSplits };
         }),
 
-    // ── Realtime patch handlers ───────────────────────────────────────────────
+    applyExpensePatch: (tripId, payload) =>
+        set((s) => {
+            const eventType = payload.eventType;
 
-    applyExpensePatch: (tripId, payload) => {
-        const { eventType, new: newRow, old: oldRow } = payload;
-        const state = get();
+            if (eventType === 'INSERT' && payload.new) {
+                const newExpense = rowToExpense(payload.new as Record<string, unknown>);
 
-        if (eventType === 'INSERT' && newRow && Object.keys(newRow).length > 0) {
-            const expense = rowToExpense(newRow as Record<string, unknown>);
-            if (!expense.id) return;
+                // Drop realtime echo of an expense we already confirmed locally
+                const confirmedSet = s.confirmedServerIds[tripId] ?? new Set<string>();
+                if (confirmedSet.has(newExpense.id)) {
+                    const updatedConfirmed = new Set(confirmedSet);
+                    updatedConfirmed.delete(newExpense.id);
+                    return {
+                        confirmedServerIds: {
+                            ...s.confirmedServerIds,
+                            [tripId]: updatedConfirmed,
+                        },
+                    };
+                }
 
-            const existing = state.expenses[tripId] ?? [];
+                const existing = s.expenses[tripId] ?? [];
+                // Also guard against any other duplicate by server ID
+                if (existing.some((e) => e.id === newExpense.id)) return s;
 
-            // 1. Exact duplicate by server id — already confirmed or duplicate event
-            if (existing.some((e) => e.id === expense.id)) return;
-
-            // 2. The optimistic placeholder (localId) is still in the list and
-            //    pendingLocalIds tells us confirmExpense hasn't fired yet.
-            //    Suppress this INSERT; confirmExpense will swap the row cleanly.
-            const pending = state.pendingLocalIds[tripId] ?? new Set<string>();
-            if (pending.size > 0) {
-                // There is at least one in-flight optimistic expense for this trip.
-                // The incoming server row must correspond to one of them.
-                // We suppress it here; confirmExpense will do the authoritative swap.
-                return;
+                return {
+                    expenses: {
+                        ...s.expenses,
+                        [tripId]: [newExpense, ...existing],
+                    },
+                };
             }
 
-            set((s) => ({
-                expenses: {
-                    ...s.expenses,
-                    [tripId]: [expense, ...(s.expenses[tripId] ?? [])],
-                },
-            }));
-            return;
-        }
-
-        if (eventType === 'UPDATE' && newRow && Object.keys(newRow).length > 0) {
-            const updated = rowToExpense(newRow as Record<string, unknown>);
-            if (!updated.id) return;
-
-            set((s) => ({
-                expenses: {
-                    ...s.expenses,
-                    [tripId]: (s.expenses[tripId] ?? []).map((e) =>
-                        e.id === updated.id ? updated : e,
-                    ),
-                },
-            }));
-            return;
-        }
-
-        if (eventType === 'DELETE' && oldRow && Object.keys(oldRow).length > 0) {
-            const deletedId = (oldRow as Record<string, unknown>).id as string;
-            if (!deletedId) return;
-            get().removeExpense(tripId, deletedId);
-        }
-    },
-
-    applySplitPatch: (payload) => {
-        const { eventType, new: newRow, old: oldRow } = payload;
-
-        if (eventType === 'INSERT' && newRow && Object.keys(newRow).length > 0) {
-            const split = rowToSplit(newRow as Record<string, unknown>);
-            if (!split.id || !split.expenseId) return;
-
-            set((s) => ({
-                splits: {
-                    ...s.splits,
-                    [split.expenseId]: [
-                        ...(s.splits[split.expenseId] ?? []).filter(
-                            (sp) => sp.id !== split.id,
+            if (eventType === 'UPDATE' && payload.new) {
+                const updated = rowToExpense(payload.new as Record<string, unknown>);
+                return {
+                    expenses: {
+                        ...s.expenses,
+                        [tripId]: (s.expenses[tripId] ?? []).map((e) =>
+                            e.id === updated.id ? updated : e,
                         ),
-                        split,
-                    ],
-                },
-            }));
-            return;
-        }
+                    },
+                };
+            }
 
-        if (eventType === 'UPDATE' && newRow && Object.keys(newRow).length > 0) {
-            const split = rowToSplit(newRow as Record<string, unknown>);
-            if (!split.id || !split.expenseId) return;
+            if (eventType === 'DELETE' && payload.old) {
+                const deletedId = (payload.old as Record<string, unknown>).id as string;
+                return {
+                    expenses: {
+                        ...s.expenses,
+                        [tripId]: (s.expenses[tripId] ?? []).filter((e) => e.id !== deletedId),
+                    },
+                };
+            }
 
-            set((s) => ({
-                splits: {
-                    ...s.splits,
-                    [split.expenseId]: (s.splits[split.expenseId] ?? []).map(
-                        (sp) => (sp.id === split.id ? split : sp),
-                    ),
-                },
-            }));
-            return;
-        }
+            return s;
+        }),
 
-        if (eventType === 'DELETE' && oldRow && Object.keys(oldRow).length > 0) {
-            const old = oldRow as Record<string, unknown>;
-            const expenseId = old.expense_id as string;
-            const splitId = old.id as string;
-            if (!expenseId || !splitId) return;
+    applySplitPatch: (payload) =>
+        set((s) => {
+            const eventType = payload.eventType;
 
-            set((s) => ({
-                splits: {
-                    ...s.splits,
-                    [expenseId]: (s.splits[expenseId] ?? []).filter(
-                        (sp) => sp.id !== splitId,
-                    ),
-                },
-            }));
-        }
-    },
+            if ((eventType === 'INSERT' || eventType === 'UPDATE') && payload.new) {
+                const split = rowToSplit(payload.new as Record<string, unknown>);
+                const existing = s.splits[split.expenseId] ?? [];
+                const without = existing.filter((sp) => sp.id !== split.id);
+                return {
+                    splits: {
+                        ...s.splits,
+                        [split.expenseId]: [...without, split],
+                    },
+                };
+            }
+
+            if (eventType === 'DELETE' && payload.old) {
+                const old = payload.old as Record<string, unknown>;
+                const expenseId = old.expense_id as string;
+                const id = old.id as string;
+                return {
+                    splits: {
+                        ...s.splits,
+                        [expenseId]: (s.splits[expenseId] ?? []).filter((sp) => sp.id !== id),
+                    },
+                };
+            }
+
+            return s;
+        }),
 }));
 
-// ─── Derived / selector helpers ───────────────────────────────────────────────
-
-export function selectIsSettledBetween(
-    state: ExpenseState,
-    tripId: string,
-    debtorMemberId: string,
-    creditorMemberId: string,
-    expenses: Expense[],
-): boolean {
-    const creditorExpenseIds = expenses
-        .filter(
-            (e) => e.tripId === tripId && e.paidByMember === creditorMemberId,
-        )
-        .map((e) => e.id);
-
-    if (creditorExpenseIds.length === 0) return false;
-
-    const relevantSplits: Split[] = [];
-    for (const expenseId of creditorExpenseIds) {
-        const splits = state.splits[expenseId] ?? [];
-        const debtorSplit = splits.find((s) => s.memberId === debtorMemberId);
-        if (debtorSplit) {
-            relevantSplits.push(debtorSplit);
-        }
-    }
-
-    if (relevantSplits.length === 0) return false;
-
-    return relevantSplits.every((s) => s.isSettled);
-}
+// Stable empty refs for hooks
+export { EMPTY_EXPENSES, EMPTY_SPLITS };

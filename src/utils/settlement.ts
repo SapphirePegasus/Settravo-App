@@ -83,9 +83,9 @@ export function calculateSettlements(
         if (transfer > 0) {
             settlements.push({
                 fromMemberId: debtor.memberId,
-                fromMemberName: nameMap.get(debtor.memberId) ?? debtor.memberId,
+                fromMemberName: nameMap.get(debtor.memberId) ?? `(unknown ${debtor.memberId.slice(0, 6)})`,
                 toMemberId: creditor.memberId,
-                toMemberName: nameMap.get(creditor.memberId) ?? creditor.memberId,
+                toMemberName: nameMap.get(creditor.memberId) ?? `(unknown ${creditor.memberId.slice(0, 6)})`,
                 amountMoney: transfer,
             });
         }

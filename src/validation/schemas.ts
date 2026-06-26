@@ -36,7 +36,7 @@ const displayName = z
 
 const joinCodeSchema = z
     .string()
-    .regex(/^[A-Z0-9]{6}$/, 'Join code must be 6 uppercase alphanumeric characters');
+    .regex(/^[A-Z0-9]{4}$/, 'Join code must be 4 uppercase alphanumeric characters');
 
 // ─── Auth / User ──────────────────────────────────────────────────────────────
 

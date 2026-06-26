@@ -8,7 +8,7 @@
 // Exclude visually ambiguous chars: 0, O, 1, I
 const CHARSET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 
-const CODE_LENGTH = 6;
+const CODE_LENGTH = 4;
 const TTL_MINUTES = 30;
 
 /**

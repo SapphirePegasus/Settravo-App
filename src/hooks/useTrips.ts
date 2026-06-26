@@ -10,9 +10,9 @@
  * This hook is used by the Home screen only. Trip detail screens use
  * selectActiveTrip() from the store directly (data is already fetched).
  */
-
 import { useCallback, useEffect } from 'react';
 import { fetchMyTrips } from '../services/tripService';
+import { useConnectionStore } from '../stores/connectionStore';
 import { useTripStore } from '../stores/tripStore';
 
 export function useTrips() {
@@ -24,8 +24,14 @@ export function useTrips() {
     const trips = useTripStore((s) => s.trips);
     const isLoading = useTripStore((s) => s.isLoading);
     const hasFetched = useTripStore((s) => s.hasFetched);
+    const networkOnline = useConnectionStore((s) => s.networkOnline);
 
     const fetchTrips = useCallback(async () => {
+        if (!networkOnline) {
+            // Serve from store (already loaded from AsyncStorage)
+            setLoading(false);
+            return;
+        }
         setLoading(true);
         try {
             const fetched = await fetchMyTrips();
@@ -33,13 +39,13 @@ export function useTrips() {
             setHasFetched(true);
         } catch (err) {
             console.error('[useTrips] fetch failed:', err);
+            // Don't clear existing trips on failure — stale data > empty list
         } finally {
             setLoading(false);
         }
-    }, [setLoading, setTrips, setHasFetched]);
+    }, [setLoading, setTrips, setHasFetched, networkOnline]);
 
     useEffect(() => {
-        // Load from AsyncStorage first (sync-ish, no flash), then fetch fresh data
         Promise.all([loadJoinedIds(), loadOfflineQueue()]).then(() => {
             fetchTrips();
         });

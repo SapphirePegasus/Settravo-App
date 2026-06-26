@@ -48,10 +48,11 @@ export default function SettleScreen() {
 
     const allSplits = useMemo(() => Object.values(splits).flat(), [splits]);
 
-    const settlements = useMemo(
-        () => calculateSettlements(expenses, allSplits, members),
-        [expenses, allSplits, members],
-    );
+    const settlements = useMemo(() => {
+        // Don't compute until members are available — prevents UUID-as-name flash
+        if (members.length === 0) return [];
+        return calculateSettlements(expenses, allSplits, members);
+    }, [expenses, allSplits, members]);
 
     const totalOwed = useMemo(
         () => settlements.reduce((sum, s) => sum + s.amountMoney, 0),
@@ -59,10 +60,11 @@ export default function SettleScreen() {
     );
 
     const settledMap = useMemo<Record<string, boolean>>(() => {
+        if (!tripId) return {};
         const map: Record<string, boolean> = {};
         for (const s of settlements) {
             const creditorExpenseIds = expenses
-                .filter((e) => e.tripId === (tripId ?? '') && e.paidByMember === s.toMemberId)
+                .filter((e) => e.tripId === tripId && e.paidByMember === s.toMemberId)
                 .map((e) => e.id);
 
             if (creditorExpenseIds.length === 0) {
@@ -93,24 +95,25 @@ export default function SettleScreen() {
         [expenses, tripId],
     );
 
+    // Replace the handleMarkPaid callback in settle.tsx:
     const handleMarkPaid = useCallback(
         async (settlement: Settlement) => {
             if (!tripId) return;
             const key = settlementKey(settlement);
-            setMarkingPaid((p) => ({ ...p, [key]: true }));
-
-            // Optimistic update — immediate UI feedback
             const creditorExpenseIds = getCreditorExpenseIds(settlement.toMemberId);
+
+            if (creditorExpenseIds.length === 0) {
+                // No expenses to settle — this settlement entry is stale
+                Alert.alert('Nothing to settle', 'No expenses found for this creditor. Try refreshing.');
+                return;
+            }
+
+            setMarkingPaid((p) => ({ ...p, [key]: true }));
             setSplitSettled(creditorExpenseIds, settlement.fromMemberId, true);
 
             try {
-                await markSettledBetweenMembers(
-                    tripId,
-                    settlement.fromMemberId,
-                    settlement.toMemberId,
-                );
+                await markSettledBetweenMembers(tripId, settlement.fromMemberId, settlement.toMemberId);
             } catch (err) {
-                // Rollback optimistic update
                 setSplitSettled(creditorExpenseIds, settlement.fromMemberId, false);
                 Alert.alert('Error', err instanceof Error ? err.message : 'Could not mark as paid.');
             } finally {
@@ -182,6 +185,15 @@ export default function SettleScreen() {
         },
         [members],
     );
+
+    // Add after the existing state/memo declarations and before the empty-state return:
+    if (expenses.length > 0 && members.length === 0) {
+        return (
+            <View style={[styles.centered, { backgroundColor: colors.bg }]}>
+                <ActivityIndicator color={isDark ? '#fff' : '#000'} />
+            </View>
+        );
+    }
 
     if (expenses.length === 0) {
         return (

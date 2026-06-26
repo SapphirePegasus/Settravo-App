@@ -52,5 +52,9 @@
     "@types/react": "19.2.2",
     "typescript": "5.9.2"
   },
+  "overrides": {
+    "react-native": "0.83.6",
+    "@react-native/virtualized-lists": "0.83.6"
+  },
   "private": true
 }
