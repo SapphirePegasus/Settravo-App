@@ -4,23 +4,19 @@
  * Watches network connectivity and replays the offline expense queue
  * when the device comes back online.
  *
- * Mount once — in the root layout or in the trip detail screen.
- * Each queued item is replayed in order. Successfully replayed items
- * are dequeued. Failed items stay in the queue for the next reconnect.
+ * Mount ONCE in the root _layout.tsx — never in individual screens.
+ * The queue is global (tripStore) and a per-screen instance creates
+ * a race condition where multiple instances replay the same items concurrently.
  *
- * Queue item types handled:
- *  - ADD_EXPENSE: calls addExpenseWithSplits()
- *  - EDIT_EXPENSE: calls editExpense()
- *  - DELETE_EXPENSE: calls deleteExpense()
+ * Retry policy:
+ *  - Each item tracks retryCount (starts at 0).
+ *  - On failure: retryCount is incremented and the item stays in the queue.
+ *  - After OFFLINE_MAX_RETRIES failures: item is moved to dead-letter queue
+ *    and removed from the live queue, unblocking subsequent items.
  *
- * Idempotency note:
- *  - ADD_EXPENSE uses a localId (UUID) as the expense id in the optimistic
- *    store. On replay, the server assigns a real UUID. confirmExpense() in
- *    expenseStore swaps the localId row for the real row.
- *  - If the app crashes between queue write and dequeue, the item is replayed
- *    again on next launch. addExpenseWithSplits() is not inherently idempotent,
- *    so a duplicate may appear. For MVP this is acceptable (last-write-wins
- *    via updated_at). A full dedup solution requires server-side idempotency keys.
+ * Splits:
+ *  - ADD_EXPENSE items carry a `splits` array (fixed from MVP placeholder).
+ *  - Replaying with splits: [] caused settlement data loss — this is now fixed.
  */
 
 import { useEffect, useRef } from 'react';
@@ -32,16 +28,20 @@ import {
 import { useConnectionStore } from '../stores/connectionStore';
 import { useExpenseStore } from '../stores/expenseStore';
 import { useTripStore } from '../stores/tripStore';
-import type { OfflineQueueItem } from '../types/domain';
+import type { DeadLetterItem, Expense, OfflineQueueItem } from '../types/domain';
+import { OFFLINE_MAX_RETRIES } from '../types/domain';
 
-export function useOfflineSync() {
+export function useOfflineSync(): void {
     const networkOnline = useConnectionStore((s) => s.networkOnline);
     const offlineQueue = useTripStore((s) => s.offlineQueue);
     const dequeueOfflineItem = useTripStore((s) => s.dequeueOfflineItem);
+    const updateOfflineItemRetry = useTripStore((s) => s.updateOfflineItemRetry);
+    const addDeadLetterItem = useTripStore((s) => s.addDeadLetterItem);
     const confirmExpense = useExpenseStore((s) => s.confirmExpense);
+    const setSplits = useExpenseStore((s) => s.setSplits);
     const removeExpense = useExpenseStore((s) => s.removeExpense);
 
-    // Ref to prevent concurrent replay runs
+    // Ref prevents concurrent replay runs within the same mounted instance
     const isReplaying = useRef(false);
 
     useEffect(() => {
@@ -49,36 +49,73 @@ export function useOfflineSync() {
             return;
         }
 
-        async function replay() {
+        async function replay(): Promise<void> {
             isReplaying.current = true;
-            // Snapshot the queue at replay start — new items added during replay
-            // are not processed in this run (they'll be caught on the next online event).
+
+            // Snapshot at replay start — items added during replay are picked
+            // up on the next online event, not mixed into this run.
             const itemsToReplay = [...offlineQueue];
 
             for (const item of itemsToReplay) {
                 try {
-                    await replayItem(item, confirmExpense, removeExpense);
+                    await replayItem(item, confirmExpense, setSplits, removeExpense);
                     await dequeueOfflineItem(item.localId);
                 } catch (err) {
-                    // Log but don't dequeue — item stays for next retry.
-                    console.warn(`[useOfflineSync] Replay failed for ${item.localId}:`, err);
+                    const newCount = (item.retryCount ?? 0) + 1;
+                    const failedAt = new Date().toISOString();
+
+                    if (newCount >= OFFLINE_MAX_RETRIES) {
+                        // Permanently failed — move to dead-letter so the queue
+                        // is not blocked forever by this item.
+                        const deadItem: DeadLetterItem = {
+                            ...item,
+                            retryCount: newCount,
+                            lastFailedAt: failedAt,
+                            failureReason: err instanceof Error ? err.message : String(err),
+                        };
+                        await dequeueOfflineItem(item.localId);
+                        await addDeadLetterItem(deadItem);
+                        console.error(
+                            `[useOfflineSync] Item ${item.localId} moved to dead-letter after ${newCount} attempts:`,
+                            err,
+                        );
+                    } else {
+                        await updateOfflineItemRetry(item.localId, newCount, failedAt);
+                        console.warn(
+                            `[useOfflineSync] Replay failed for ${item.localId} (attempt ${newCount}/${OFFLINE_MAX_RETRIES}):`,
+                            err,
+                        );
+                    }
                 }
             }
+
             isReplaying.current = false;
         }
 
         replay();
-    }, [networkOnline, offlineQueue, dequeueOfflineItem, confirmExpense, removeExpense]);
+    }, [
+        networkOnline,
+        offlineQueue,
+        dequeueOfflineItem,
+        updateOfflineItemRetry,
+        addDeadLetterItem,
+        confirmExpense,
+        setSplits,
+        removeExpense,
+    ]);
 }
+
+// ─── Replay dispatcher ────────────────────────────────────────────────────────
 
 async function replayItem(
     item: OfflineQueueItem,
-    confirmExpense: (tripId: string, localId: string, confirmed: import('../types/domain').Expense) => void,
+    confirmExpense: (tripId: string, localId: string, confirmed: Expense) => void,
+    setSplits: (expenseId: string, splits: import('../types/domain').Split[]) => void,
     removeExpense: (tripId: string, expenseId: string) => void,
 ): Promise<void> {
     if (item.type === 'ADD_EXPENSE') {
-        const { payload, localId } = item;
-        const { expense } = await addExpenseWithSplits(
+        const { payload, localId, splits } = item;
+        const { expense, splits: confirmedSplits } = await addExpenseWithSplits(
             {
                 tripId: payload.tripId,
                 paidByMember: payload.paidByMember,
@@ -86,12 +123,13 @@ async function replayItem(
                 category: payload.category,
                 amountMoney: payload.amountMoney,
             },
-            // Splits are not stored in the offline queue for ADD_EXPENSE in this MVP.
-            // They will be re-entered by the user. A future version should store splits
-            // alongside the expense in the queue payload.
-            { splits: [] },
+            // Use the splits stored at queue-time — NEVER pass []
+            { splits },
         );
+        // Swap optimistic local row for the confirmed server row
         confirmExpense(payload.tripId, localId, expense);
+        // Hydrate the confirmed splits into the store so settlement math is correct
+        setSplits(expense.id, confirmedSplits);
         return;
     }
 
@@ -105,4 +143,8 @@ async function replayItem(
         removeExpense(item.payload.tripId, item.payload.expenseId);
         return;
     }
+
+    // TypeScript exhaustiveness guard — never reached at runtime
+    const _exhaustive: never = item;
+    throw new Error(`[useOfflineSync] Unknown queue item type: ${(_exhaustive as OfflineQueueItem).type}`);
 }

@@ -13,6 +13,7 @@
 import { supabase } from '../lib/supabase';
 import type { Member, Trip } from '../types/domain';
 import type { Database } from '../types/supabase';
+import { AppError } from '@/errors/AppError';
 import { generateExpiresAt, generateJoinCode } from '../utils/joinCode';
 import {
     CreateTripSchema,
@@ -62,18 +63,22 @@ function generateUUID(): string {
         return crypto.randomUUID();
     }
 
-    // RFC 4122 v4 UUID via getRandomValues — always available in Hermes/Expo
-    const bytes = new Uint8Array(16);
-    if (typeof crypto !== 'undefined' && crypto.getRandomValues) {
-        crypto.getRandomValues(bytes);
-    } else {
-        // Last-resort: Math.random (should never hit this in Expo)
-        for (let i = 0; i < 16; i++) bytes[i] = Math.floor(Math.random() * 256);
+    // getRandomValues is always available in Hermes / Expo 50+.
+    // If it is somehow absent, we hard-fail rather than silently degrade to
+    // Math.random — a non-CSPRNG must never generate a guest_token credential.
+    if (typeof crypto === 'undefined' || typeof crypto.getRandomValues !== 'function') {
+        throw new AppError(
+            'UNKNOWN',
+            '[security] crypto.getRandomValues is unavailable — cannot generate a secure UUID.',
+        );
     }
 
-    // Set version bits: version 4 (0100xxxx)
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+
+    // Set version 4 bits
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
-    // Set variant bits: RFC 4122 (10xxxxxx)
+    // Set RFC 4122 variant bits
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
 
     const hex = Array.from(bytes).map((b) => b.toString(16).padStart(2, '0'));
@@ -90,13 +95,11 @@ function generateUUID(): string {
  * Create a new trip. Routes through the "trip-action" Edge Function
  * which atomically inserts the trip + the creator as first member.
  */
-export async function createTrip(
-    input: CreateTripInput,
-    creatorDisplayName: string,
-): Promise<Trip> {
+export async function createTrip(input: CreateTripInput, creatorDisplayName: string): Promise<Trip> {
     const validated = CreateTripSchema.parse(input);
-    const joinCode = generateJoinCode();
-    const joinCodeExpiresAt = generateExpiresAt();
+    // join_code and join_code_expires_at are generated server-side in the
+    // Edge Function — never on the client. A tampered client cannot inject
+    // an arbitrary code or a far-future expiry.
 
     const { data, error } = await supabase.functions.invoke<{ trip: TripRow }>('trip-action', {
         body: {
@@ -106,8 +109,6 @@ export async function createTrip(
                 destination: validated.destination ?? null,
                 start_date: validated.startDate ?? null,
                 end_date: validated.endDate ?? null,
-                join_code: joinCode,
-                join_code_expires_at: joinCodeExpiresAt,
                 creator_display_name: creatorDisplayName,
             },
         },
@@ -119,7 +120,7 @@ export async function createTrip(
 }
 
 /**
- * Join an existing trip by 6-char join code.
+ * Join an existing trip by 4-char join code.
  * Edge Function validates code TTL, duplicate membership, and handles guest claim.
  */
 export async function joinTrip(input: JoinTripInput): Promise<Trip> {
@@ -177,7 +178,7 @@ export async function getTripMembers(tripId: string): Promise<Member[]> {
 
 /**
  * Regenerate join code (creator only — RLS "creator can update their trip" enforces this).
- * Issues a new 6-char code with a fresh 30-min TTL.
+ * Issues a new 4-char code with a fresh 30-min TTL.
  */
 export async function regenerateJoinCode(tripId: string): Promise<Trip> {
     const { data, error } = await supabase

@@ -1,40 +1,40 @@
 /**
  * src/app/_layout.tsx
  *
- * Root layout for Expo Router. This file:
- *  1. Runs initializeIdentity() on mount — must complete before any screen renders.
- *  2. Subscribes to Supabase auth state changes (single subscriber, never duplicated).
- *  3. Subscribes to NetInfo for offline queue trigger.
- *  4. Renders a SplashScreen-style loading state while auth initializes.
- *  5. Renders an error state if auth fails permanently.
- *  6. Respects the system color scheme (light/dark) via useColorScheme().
- *  7. Uses the system font — no custom font loading, no extra dependency.
- *
- * Auth guard pattern:
- *  - isReady=false → show loading indicator (SplashScreen is still visible)
- *  - isReady=true, deviceUser=null → show onboarding (name entry)
- *  - isReady=true, deviceUser set, displayName=null → show name prompt
- *  - isReady=true, deviceUser set, displayName set → render <Stack />
- *
- * This is the ONLY place that calls initializeIdentity() and subscribes
- * to auth changes. Never do this in a screen component.
+ * Root layout. Responsibilities:
+ *  1. Sentry crash reporting initialised at module load time.
+ *  2. Runs initializeIdentity() — must complete before any screen renders.
+ *  3. Subscribes to Supabase auth state changes (single subscriber).
+ *  4. Subscribes to NetInfo for offline queue trigger.
+ *  5. Mounts useOfflineSync() ONCE — never in individual trip screens.
+ *  6. Wraps all children in AppErrorBoundary for render-error recovery.
+ *  7. Respects system color scheme (light/dark).
  */
 
-/**
- * src/app/_layout.tsx — Root layout (patched)
- *
- * Key fix: fetch the real initial network state from NetInfo on mount
- * before setting up the listener, so the banner correctly shows "offline"
- * from the very first frame if the device has no connectivity.
- */
-
+import * as Sentry from '@sentry/react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { SplashScreen, Stack } from 'expo-router';
 import { useCallback, useEffect } from 'react';
 import { ActivityIndicator, StyleSheet, Text, useColorScheme, View } from 'react-native';
+import { AppErrorBoundary } from '../components/AppErrorBoundary';
 import { OnboardingScreen } from '../components/OnboardingScreen';
+import { useOfflineSync } from '../hooks/useOfflineSync';
 import { subscribeToAuthChanges, useAuthStore } from '../stores/authStore';
 import { useConnectionStore } from '../stores/connectionStore';
+
+// ─── Sentry initialisation ────────────────────────────────────────────────────
+// Must run before any component renders so the first frame is already instrumented.
+// DSN is safe to ship in the bundle — it only accepts inbound events, not reads.
+Sentry.init({
+    dsn: process.env.EXPO_PUBLIC_SENTRY_DSN ?? '',
+    environment: __DEV__ ? 'development' : 'production',
+    // 20% of sessions emit performance traces — adjust as traffic grows
+    tracesSampleRate: __DEV__ ? 0 : 0.2,
+    // Disable native nagger dialog — errors surface in the Sentry dashboard
+    enableNativeNagger: false,
+    // Breadcrumbs for console.warn/error aid debugging without PII leakage
+    enableAutoPerformanceTracing: !__DEV__,
+});
 
 SplashScreen.preventAutoHideAsync();
 
@@ -46,21 +46,23 @@ export default function RootLayout() {
     const isReady = useAuthStore((s) => s.isReady);
     const deviceUser = useAuthStore((s) => s.deviceUser);
     const initError = useAuthStore((s) => s.initError);
-
     const setNetworkOnline = useConnectionStore((s) => s.setNetworkOnline);
 
+    // ── Identity ─────────────────────────────────────────────────────────────
     useEffect(() => {
         initializeIdentity();
     }, [initializeIdentity]);
 
+    // ── Auth changes ──────────────────────────────────────────────────────────
     useEffect(() => {
         const unsubscribe = subscribeToAuthChanges();
         return unsubscribe;
     }, []);
 
+    // ── Network state ─────────────────────────────────────────────────────────
     useEffect(() => {
-        // Fetch real initial state immediately — don't rely on the first
-        // listener event which fires asynchronously and leaves a stale gap.
+        // Fetch real initial state immediately — the first listener event fires
+        // asynchronously and would leave a stale gap on first render.
         NetInfo.fetch().then((state) => {
             setNetworkOnline(state.isConnected ?? false);
         });
@@ -68,21 +70,24 @@ export default function RootLayout() {
         const unsubscribe = NetInfo.addEventListener((state) => {
             setNetworkOnline(state.isConnected ?? false);
         });
-        return () => {
-            unsubscribe();
-        };
+        return () => { unsubscribe(); };
     }, [setNetworkOnline]);
 
+    // ── Offline queue sync — mounted ONCE at root ─────────────────────────────
+    // Never call useOfflineSync() inside individual trip screens — that creates
+    // multiple racing instances sharing the same global queue.
+    useOfflineSync();
+
+    // ── Splash screen ─────────────────────────────────────────────────────────
     const onReady = useCallback(async () => {
         if (isReady) {
             await SplashScreen.hideAsync();
         }
     }, [isReady]);
 
-    useEffect(() => {
-        onReady();
-    }, [onReady]);
+    useEffect(() => { onReady(); }, [onReady]);
 
+    // ── Loading / error / onboarding gates ───────────────────────────────────
     if (!isReady) {
         return (
             <View style={[styles.center, isDark ? styles.darkBg : styles.lightBg]}>
@@ -109,17 +114,19 @@ export default function RootLayout() {
     }
 
     return (
-        <Stack
-            screenOptions={{
-                headerStyle: { backgroundColor: isDark ? '#1c1c1e' : '#f2f2f7' },
-                headerTintColor: isDark ? '#ffffff' : '#000000',
-                headerShadowVisible: false,
-                contentStyle: { backgroundColor: isDark ? '#000000' : '#f2f2f7' },
-            }}
-        >
-            <Stack.Screen name="index" options={{ title: '' }} />
-            <Stack.Screen name="(trip)" options={{ headerShown: false }} />
-        </Stack>
+        <AppErrorBoundary>
+            <Stack
+                screenOptions={{
+                    headerStyle: { backgroundColor: isDark ? '#1c1c1e' : '#f2f2f7' },
+                    headerTintColor: isDark ? '#ffffff' : '#000000',
+                    headerShadowVisible: false,
+                    contentStyle: { backgroundColor: isDark ? '#000000' : '#f2f2f7' },
+                }}
+            >
+                <Stack.Screen name="index" options={{ title: '' }} />
+                <Stack.Screen name="(trip)" options={{ headerShown: false }} />
+            </Stack>
+        </AppErrorBoundary>
     );
 }
 

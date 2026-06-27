@@ -135,13 +135,22 @@ export default function AddExpenseScreen() {
             await enqueueOfflineItem({
                 type: 'ADD_EXPENSE',
                 localId,
+                retryCount: 0,
+                lastFailedAt: null,
                 payload: {
                     tripId,
                     paidByMember: paidByMemberId,
                     title: title.trim(),
                     category,
                     amountMoney: amountPaise,
+                    isPendingSync: true,
                 },
+                // CRITICAL: splits must be persisted with the queue item.
+                // Replaying with [] causes permanent data loss in settlement math.
+                splits: Object.entries(finalSplits).map(([memberId, shareMoney]) => ({
+                    memberId,
+                    shareMoney,
+                })),
             });
             router.back();
             return;

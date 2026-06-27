@@ -43,7 +43,7 @@ export function useExpenses(tripId: string) {
     );
     const isLoading = useExpenseStore((s) => s.isLoading);
 
-    // Ref to the active subscription so cleanup is stable across renders
+    // In useExpenses, change the subscription ref type and expose reconnect:
     const subscriptionRef = useRef<RealtimeSubscription | null>(null);
 
     const loadData = useCallback(async () => {
@@ -88,5 +88,10 @@ export function useExpenses(tripId: string) {
         };
     }, [tripId, loadData]);
 
-    return { expenses, isLoading, refresh: loadData };
+    return {
+        expenses,
+        isLoading,
+        refresh: loadData,
+        reconnectRealtime: () => subscriptionRef.current?.reconnect(),
+    };
 }

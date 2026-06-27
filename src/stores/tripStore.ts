@@ -6,16 +6,24 @@
  * Persistence strategy:
  *  - Trip ID list → AsyncStorage "settravo:joined_trip_ids"
  *  - Offline queue → AsyncStorage "settravo:offline_queue"
+ *  - Dead-letter queue → AsyncStorage "settravo:dead_letter_queue"
  *  - Full trip objects are NOT persisted locally — re-fetched on launch.
  *    Only IDs are persisted so we know what to fetch.
+ *
+ * Offline queue integrity:
+ *  - loadOfflineQueue validates each item with OfflineQueueItemSchema.
+ *  - Invalid items are dropped to dead-letter rather than crashing the replay loop.
+ *  - Items that fail OFFLINE_MAX_RETRIES times are moved to dead-letter.
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
-import type { OfflineQueueItem, Trip } from '../types/domain';
+import type { DeadLetterItem, OfflineQueueItem, Trip } from '../types/domain';
+import { OfflineQueueItemSchema } from '../validation/schemas';
 
 const JOINED_IDS_KEY = 'settravo:joined_trip_ids';
 const OFFLINE_QUEUE_KEY = 'settravo:offline_queue';
+const DEAD_LETTER_KEY = 'settravo:dead_letter_queue';
 
 interface TripState {
     trips: Trip[];
@@ -24,6 +32,7 @@ interface TripState {
     hasFetched: boolean;
     activeTripId: string | null;
     offlineQueue: OfflineQueueItem[];
+    deadLetterQueue: DeadLetterItem[];
 
     setTrips: (trips: Trip[]) => void;
     addTrip: (trip: Trip) => Promise<void>;
@@ -34,7 +43,19 @@ interface TripState {
     loadJoinedIds: () => Promise<void>;
     enqueueOfflineItem: (item: OfflineQueueItem) => Promise<void>;
     dequeueOfflineItem: (localId: string) => Promise<void>;
+    /**
+     * Increment retryCount and update lastFailedAt for an item.
+     * Called by useOfflineSync when a replay attempt fails but hasn't
+     * yet exceeded OFFLINE_MAX_RETRIES.
+     */
+    updateOfflineItemRetry: (localId: string, newRetryCount: number, failedAt: string) => Promise<void>;
+    /**
+     * Move a failed item from the live queue to the dead-letter queue.
+     * Called by useOfflineSync when retryCount >= OFFLINE_MAX_RETRIES.
+     */
+    addDeadLetterItem: (item: DeadLetterItem) => Promise<void>;
     loadOfflineQueue: () => Promise<void>;
+    loadDeadLetterQueue: () => Promise<void>;
 }
 
 export const useTripStore = create<TripState>((set, get) => ({
@@ -44,6 +65,7 @@ export const useTripStore = create<TripState>((set, get) => ({
     hasFetched: false,
     activeTripId: null,
     offlineQueue: [],
+    deadLetterQueue: [],
 
     setTrips: (trips) => set({ trips }),
 
@@ -94,15 +116,70 @@ export const useTripStore = create<TripState>((set, get) => ({
         await persistOfflineQueue(newQueue);
     },
 
+    updateOfflineItemRetry: async (localId, newRetryCount, failedAt) => {
+        const { offlineQueue } = get();
+        const newQueue = offlineQueue.map((item) =>
+            item.localId === localId
+                ? { ...item, retryCount: newRetryCount, lastFailedAt: failedAt }
+                : item,
+        );
+        set({ offlineQueue: newQueue });
+        await persistOfflineQueue(newQueue);
+    },
+
+    addDeadLetterItem: async (item) => {
+        const { deadLetterQueue } = get();
+        const newDL = [...deadLetterQueue, item];
+        set({ deadLetterQueue: newDL });
+        await persistDeadLetterQueue(newDL);
+    },
+
     loadOfflineQueue: async () => {
         try {
             const raw = await AsyncStorage.getItem(OFFLINE_QUEUE_KEY);
-            if (raw) {
-                const queue: OfflineQueueItem[] = JSON.parse(raw);
-                set({ offlineQueue: queue });
+            if (!raw) return;
+
+            const parsed: unknown[] = JSON.parse(raw);
+            const valid: OfflineQueueItem[] = [];
+            const dropped: unknown[] = [];
+
+            for (const entry of parsed) {
+                const result = OfflineQueueItemSchema.safeParse(entry);
+                if (result.success) {
+                    valid.push(result.data as OfflineQueueItem);
+                } else {
+                    console.warn(
+                        '[tripStore] Dropped invalid offline queue entry:',
+                        result.error.flatten(),
+                    );
+                    dropped.push(entry);
+                }
+            }
+
+            set({ offlineQueue: valid });
+
+            // Re-persist only valid items to clean up any corruption
+            if (dropped.length > 0) {
+                await persistOfflineQueue(valid);
             }
         } catch (err) {
             console.warn('[tripStore] Failed to load offline queue:', err);
+            // On total parse failure, reset queue to prevent the app from
+            // being permanently stuck
+            set({ offlineQueue: [] });
+            await AsyncStorage.removeItem(OFFLINE_QUEUE_KEY);
+        }
+    },
+
+    loadDeadLetterQueue: async () => {
+        try {
+            const raw = await AsyncStorage.getItem(DEAD_LETTER_KEY);
+            if (raw) {
+                const items: DeadLetterItem[] = JSON.parse(raw);
+                set({ deadLetterQueue: items });
+            }
+        } catch (err) {
+            console.warn('[tripStore] Failed to load dead-letter queue:', err);
         }
     },
 }));
@@ -111,6 +188,8 @@ export function selectActiveTrip(state: TripState): Trip | null {
     if (!state.activeTripId) return null;
     return state.trips.find((t) => t.id === state.activeTripId) ?? null;
 }
+
+// ─── AsyncStorage helpers ─────────────────────────────────────────────────────
 
 async function persistJoinedIds(ids: string[]): Promise<void> {
     try {
@@ -125,5 +204,13 @@ async function persistOfflineQueue(queue: OfflineQueueItem[]): Promise<void> {
         await AsyncStorage.setItem(OFFLINE_QUEUE_KEY, JSON.stringify(queue));
     } catch (err) {
         console.error('[tripStore] Failed to persist offline queue:', err);
+    }
+}
+
+async function persistDeadLetterQueue(items: DeadLetterItem[]): Promise<void> {
+    try {
+        await AsyncStorage.setItem(DEAD_LETTER_KEY, JSON.stringify(items));
+    } catch (err) {
+        console.error('[tripStore] Failed to persist dead-letter queue:', err);
     }
 }

@@ -8,6 +8,7 @@
  *    appears instantly in the settle screen too.
  */
 
+import * as Crypto from 'expo-crypto';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
@@ -25,13 +26,14 @@ import { ExpenseRow } from '../../../components/ExpenseRow';
 import { MemberAvatar } from '../../../components/MemberAvatar';
 import { useExpenses } from '../../../hooks/useExpenses';
 import { useMembers } from '../../../hooks/useMembers';
-import { useOfflineSync } from '../../../hooks/useOfflineSync';
 import { deleteExpense } from '../../../services/expenseService';
 import { buildGuestUrl } from '../../../services/memberService';
 import { addGuestMember, getTrip } from '../../../services/tripService';
 import { useAuthStore } from '../../../stores/authStore';
+import { useConnectionStore } from '../../../stores/connectionStore';
 import { useExpenseStore } from '../../../stores/expenseStore';
 import { useMemberStore } from '../../../stores/memberStore';
+import { useTripStore } from '../../../stores/tripStore';
 import type { Trip } from '../../../types/domain';
 import { formatRupees } from '../../../utils/money';
 import { calculateSettlements } from '../../../utils/settlement';
@@ -85,14 +87,15 @@ export default function TripDetailScreen() {
     const removeExpenseFromStore = useExpenseStore((s) => s.removeExpense);
     const storeMember = useMemberStore((s) => s.addMember);
 
+    const networkOnline = useConnectionStore((s) => s.networkOnline);
+    const enqueueOfflineItem = useTripStore((s) => s.enqueueOfflineItem);
+
     const [trip, setTrip] = useState<Trip | null>(null);
     const [tripLoading, setTripLoading] = useState(true);
     const [addMemberVisible, setAddMemberVisible] = useState(false);
 
     const members = useMembers(tripId ?? '');
-    const { expenses, isLoading: expensesLoading } = useExpenses(tripId ?? '');
-
-    useOfflineSync();
+    const { expenses, isLoading: expensesLoading, reconnectRealtime } = useExpenses(tripId ?? '');
 
     const loadTrip = useCallback(async () => {
         if (!tripId) return;
@@ -118,13 +121,27 @@ export default function TripDetailScreen() {
 
     const handleDeleteExpense = useCallback(async (expenseId: string) => {
         if (!tripId) return;
+
+        if (!networkOnline) {
+            // Optimistic remove — will be synced to the server on reconnect
+            removeExpenseFromStore(tripId, expenseId);
+            await enqueueOfflineItem({
+                type: 'DELETE_EXPENSE',
+                localId: Crypto.randomUUID(),
+                retryCount: 0,
+                lastFailedAt: null,
+                payload: { expenseId, tripId },
+            });
+            return;
+        }
+
         try {
             await deleteExpense(expenseId);
             removeExpenseFromStore(tripId, expenseId);
         } catch (err) {
             Alert.alert('Error', err instanceof Error ? err.message : 'Could not delete.');
         }
-    }, [tripId, removeExpenseFromStore]);
+    }, [tripId, networkOnline, removeExpenseFromStore, enqueueOfflineItem]);
 
     const handleAddMember = useCallback(async (name: string) => {
         if (!tripId) return;
@@ -168,7 +185,7 @@ export default function TripDetailScreen() {
 
     return (
         <View style={[styles.root, { backgroundColor: colors.bg }]}>
-            <ConnectionBanner />
+            <ConnectionBanner onReconnect={reconnectRealtime} />
 
             <SectionList
                 sections={sections}

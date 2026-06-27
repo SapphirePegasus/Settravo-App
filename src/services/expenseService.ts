@@ -21,6 +21,7 @@
 import { supabase } from '../lib/supabase';
 import type { Expense, Split } from '../types/domain';
 import type { Database } from '../types/supabase';
+import { AppError, classifySupabaseError } from '../errors/AppError';
 import {
     AddExpenseSchema,
     AddSplitsSchema,
@@ -240,74 +241,48 @@ export async function deleteExpense(expenseId: string): Promise<void> {
 }
 
 /**
- * Mark all splits between two members as settled.
+ * Mark or unmark all splits settled between two members using a single
+ * atomic Postgres RPC — eliminates the TOCTOU race condition that existed
+ * with two sequential round trips (SELECT expenses → UPDATE splits).
  *
- * "Settled" means: the debtor has paid the creditor outside the app
- * (cash, UPI, etc.). We mark is_settled=true on all TravelAppSplits rows
- * where the debtor is the member_id and the expense was paid by the creditor.
- *
- * RLS "Payer can update splits on their expense" covers this — the creditor
- * (the payer of the original expense) is the one marking it settled.
- *
- * Returns the count of rows updated.
+ * The RPC runs inside the DB transaction boundary so no expense added
+ * between the two old queries can be silently missed.
  */
+async function rpcMarkSettled(
+    tripId: string,
+    debtorMemberId: string,
+    creditorMemberId: string,
+    settled: boolean,
+): Promise<number> {
+    const { data, error } = await supabase.rpc('mark_settled_between', {
+        p_trip_id: tripId,
+        p_debtor_id: debtorMemberId,
+        p_creditor_id: creditorMemberId,
+        p_settled: settled,
+    });
+
+    if (error) {
+        throw new AppError(
+            'SERVER',
+            `[expenseService] mark_settled_between RPC failed: ${error.message}`,
+            error,
+        );
+    }
+    return (data as number) ?? 0;
+}
+
 export async function markSettledBetweenMembers(
     tripId: string,
     debtorMemberId: string,
     creditorMemberId: string,
 ): Promise<number> {
-    // Get all expense IDs where creditor paid
-    const { data: expenses, error: expErr } = await supabase
-        .from('TravelAppExpenses')
-        .select('id')
-        .eq('trip_id', tripId)
-        .eq('paid_by_member', creditorMemberId);
-
-    if (expErr) throw new Error(`[expenseService] markSettled fetch expenses: ${expErr.message}`);
-    if (!expenses || expenses.length === 0) return 0;
-
-    const expenseIds = expenses.map((e) => e.id);
-
-    const { data: updated, error: splitErr } = await supabase
-        .from('TravelAppSplits')
-        .update({ is_settled: true })
-        .in('expense_id', expenseIds)
-        .eq('member_id', debtorMemberId)
-        .eq('is_settled', false)
-        .select();
-
-    if (splitErr) throw new Error(`[expenseService] markSettled update splits: ${splitErr.message}`);
-    return updated?.length ?? 0;
+    return rpcMarkSettled(tripId, debtorMemberId, creditorMemberId, true);
 }
 
-/**
- * Unmark (reopen) settlements between two members.
- * Useful if a payment was recorded by mistake.
- */
 export async function unmarkSettledBetweenMembers(
     tripId: string,
     debtorMemberId: string,
     creditorMemberId: string,
 ): Promise<number> {
-    const { data: expenses, error: expErr } = await supabase
-        .from('TravelAppExpenses')
-        .select('id')
-        .eq('trip_id', tripId)
-        .eq('paid_by_member', creditorMemberId);
-
-    if (expErr) throw new Error(`[expenseService] unmarkSettled: ${expErr.message}`);
-    if (!expenses || expenses.length === 0) return 0;
-
-    const expenseIds = expenses.map((e) => e.id);
-
-    const { data: updated, error: splitErr } = await supabase
-        .from('TravelAppSplits')
-        .update({ is_settled: false })
-        .in('expense_id', expenseIds)
-        .eq('member_id', debtorMemberId)
-        .eq('is_settled', true)
-        .select();
-
-    if (splitErr) throw new Error(`[expenseService] unmarkSettled update splits: ${splitErr.message}`);
-    return updated?.length ?? 0;
+    return rpcMarkSettled(tripId, debtorMemberId, creditorMemberId, false);
 }

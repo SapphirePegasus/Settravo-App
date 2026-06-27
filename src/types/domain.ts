@@ -31,7 +31,7 @@ export interface Trip {
     endDate: string | null;
     createdByDevice: string;   // FK → TravelAppUsers.id
     createdAt: string;
-    /** Null when expired or never generated. 6 uppercase alphanumeric chars. */
+    /** Null when expired or never generated. 4 uppercase alphanumeric chars. */
     joinCode: string | null;
     /** ISO timestamptz. Null when code is expired or never generated. */
     joinCodeExpiresAt: string | null;
@@ -99,11 +99,38 @@ export interface Settlement {
 
 // ─── Offline queue ───────────────────────────────────────────────────────────
 
-export type OfflineQueueItem =
-    | { type: 'ADD_EXPENSE'; payload: Omit<Expense, 'id' | 'createdAt' | 'updatedAt'>; localId: string }
-    | { type: 'EDIT_EXPENSE'; payload: Partial<Expense> & { id: string }; localId: string }
-    | { type: 'DELETE_EXPENSE'; payload: { expenseId: string; tripId: string }; localId: string };
+/**
+ * Base fields shared by every offline queue item.
+ * retryCount starts at 0. Items exceeding MAX_RETRY_COUNT are moved
+ * to the dead-letter queue by useOfflineSync.
+ */
+type OfflineQueueBase = {
+    localId: string;
+    retryCount: number;
+    lastFailedAt: string | null; // ISO timestamptz
+};
 
+export type OfflineQueueItem =
+    | (OfflineQueueBase & {
+        type: 'ADD_EXPENSE';
+        payload: Omit<Expense, 'id' | 'createdAt' | 'updatedAt'>;
+        /** Splits MUST be stored here — replaying with [] causes data loss. */
+        splits: { memberId: string; shareMoney: number }[];
+    })
+    | (OfflineQueueBase & {
+        type: 'EDIT_EXPENSE';
+        payload: Partial<Expense> & { id: string };
+    })
+    | (OfflineQueueBase & {
+        type: 'DELETE_EXPENSE';
+        payload: { expenseId: string; tripId: string };
+    });
+
+/** Dead-letter item: an OfflineQueueItem that permanently failed. */
+export type DeadLetterItem = OfflineQueueItem & { failureReason: string };
+
+/** Maximum retry attempts before an item is moved to dead-letter. */
+export const OFFLINE_MAX_RETRIES = 5;
 // ─── Connection status ───────────────────────────────────────────────────────
 
 export type ConnectionStatus = 'connected' | 'reconnecting' | 'offline';

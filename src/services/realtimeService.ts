@@ -38,6 +38,7 @@ import type { RealtimeChannel } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useExpenseStore } from '../stores/expenseStore';
+import * as Sentry from '@sentry/react-native';
 
 const BACKOFF_BASE_MS = 3_000;
 const BACKOFF_MULTIPLIER = 2;
@@ -50,6 +51,11 @@ function backoffDelay(attempt: number): number {
 
 export interface RealtimeSubscription {
     unsubscribe: () => void;
+    /**
+     * Manually re-initiates the connection after max retries have been exceeded.
+     * Wire this to a "Tap to retry" button in ConnectionBanner.
+     */
+    reconnect: () => void;
 }
 
 export function subscribeToTrip(tripId: string): RealtimeSubscription {
@@ -112,6 +118,18 @@ export function subscribeToTrip(tripId: string): RealtimeSubscription {
                 },
             )
             .subscribe((status, err) => {
+                if (attempt >= MAX_RETRIES) {
+                    console.error(
+                        `[realtimeService] Max retries (${MAX_RETRIES}) reached for trip:${tripId}.`,
+                    );
+                    Sentry.captureMessage(
+                        `[realtimeService] Realtime max retries for trip:${tripId}`,
+                        'warning',
+                    );
+                    setRealtimeStatus('disconnected');
+                    return;
+                }
+
                 if (isTornDown) return;
 
                 if (status === 'SUBSCRIBED') {
@@ -165,7 +183,16 @@ export function subscribeToTrip(tripId: string): RealtimeSubscription {
             clearBackoffTimer();
             removeCurrentChannel();
             setRealtimeStatus('disconnected');
-            setChannelMounted(false); // ← KEY FIX: banner disappears on home screen
+            setChannelMounted(false);
+        },
+        reconnect: () => {
+            // Guard: only allow manual reconnect after the backoff loop has
+            // exhausted (status === 'disconnected' and isTornDown is false).
+            // If already reconnecting, this is a no-op.
+            if (isTornDown || isReconnecting) return;
+            attempt = 0; // Reset attempt counter for a fresh backoff sequence
+            isReconnecting = false;
+            connect();
         },
     };
 }

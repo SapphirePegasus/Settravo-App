@@ -218,7 +218,15 @@ export interface Database {
             [_ in never]: never;
         };
         Functions: {
-            [_ in never]: never;
+            mark_settled_between: {
+                Args: {
+                    p_trip_id: string;
+                    p_debtor_id: string;
+                    p_creditor_id: string;
+                    p_settled: boolean;
+                };
+                Returns: number;
+            };
         };
         Enums: {
             [_ in never]: never;

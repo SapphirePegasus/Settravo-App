@@ -22,7 +22,7 @@ import * as SecureStore from 'expo-secure-store';
 import { supabase } from '../lib/supabase';
 import type { DeviceUser } from '../types/domain';
 import type { Database } from '../types/supabase';
-import { RegisterDeviceSchema } from '../validation/schemas';
+import { RegisterDeviceSchema, DeviceUserCacheSchema } from '../validation/schemas';
 
 type UserRow = Database['public']['Tables']['TravelAppUsers']['Row'];
 
@@ -56,8 +56,22 @@ async function readCachedUser(): Promise<DeviceUser | null> {
     try {
         const raw = await SecureStore.getItemAsync(SECURE_USER_CACHE_KEY);
         if (!raw) return null;
-        return JSON.parse(raw) as DeviceUser;
+
+        // Security: never trust raw JSON from SecureStore without schema validation.
+        // Corrupted or tampered cache entries are evicted rather than accepted.
+        const result = DeviceUserCacheSchema.safeParse(JSON.parse(raw));
+        if (!result.success) {
+            console.warn(
+                '[authService] SecureStore cache failed validation — evicting.',
+                result.error.flatten(),
+            );
+            await SecureStore.deleteItemAsync(SECURE_USER_CACHE_KEY);
+            return null;
+        }
+        return result.data;
     } catch {
+        // JSON.parse failure or SecureStore read error — treat as cache miss
+        await SecureStore.deleteItemAsync(SECURE_USER_CACHE_KEY).catch(() => { });
         return null;
     }
 }

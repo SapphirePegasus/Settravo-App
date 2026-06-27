@@ -16,6 +16,7 @@
     "@react-navigation/bottom-tabs": "7.15.5",
     "@react-navigation/elements": "2.9.10",
     "@react-navigation/native": "7.1.33",
+    "@sentry/react-native": "~7.11.0",
     "@supabase/supabase-js": "2.105.4",
     "expo": "55.0.24",
     "expo-camera": "55.0.18",

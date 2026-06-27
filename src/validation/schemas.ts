@@ -8,7 +8,7 @@
  *  - String lengths capped to prevent DB abuse and UI overflow
  *  - Control characters stripped via .trim()
  *  - Money is always a positive integer (paise)
- *  - Join codes are uppercase alphanumeric exactly 6 chars
+ *  - Join codes are uppercase alphanumeric exactly 4 chars
  *  - UUIDs are validated as v4 format
  */
 
@@ -179,3 +179,77 @@ export function validateSplitTotal(
         );
     }
 }
+
+// ─── DeviceUser cache (SecureStore) ──────────────────────────────────────────
+
+/**
+ * Validates the JSON blob stored in SecureStore for offline-first boot.
+ * Any corruption or tampered entry is rejected and the cache is evicted.
+ * MUST be kept in sync with the DeviceUser domain type.
+ */
+export const DeviceUserCacheSchema = z.object({
+    id: uuid,
+    deviceUuid: uuid,
+    displayName: z.string().nullable(),
+    avatarColor: z
+        .string()
+        .regex(/^#[0-9A-Fa-f]{6}$/, 'Invalid hex color')
+        .nullable(),
+    createdAt: z.string().min(1),
+    lastSeen: z.string().min(1),
+});
+
+export type DeviceUserCache = z.infer<typeof DeviceUserCacheSchema>;
+
+// ─── Offline queue item ───────────────────────────────────────────────────────
+
+const offlineQueueBaseSchema = z.object({
+    localId: uuid,
+    retryCount: z.number().int().min(0),
+    lastFailedAt: z.string().nullable(),
+});
+
+const offlineSplitEntrySchema = z.object({
+    memberId: uuid,
+    shareMoney: paise,
+});
+
+const addExpenseQueueItemSchema = offlineQueueBaseSchema.extend({
+    type: z.literal('ADD_EXPENSE'),
+    payload: z.object({
+        tripId: uuid,
+        paidByMember: uuid,
+        title: z.string().min(1).max(120),
+        category: z.enum(['food', 'transport', 'stay', 'misc']).nullable().optional(),
+        amountMoney: paise,
+        isPendingSync: z.boolean().optional(),
+    }),
+    splits: z.array(offlineSplitEntrySchema).min(1).max(20),
+});
+
+const editExpenseQueueItemSchema = offlineQueueBaseSchema.extend({
+    type: z.literal('EDIT_EXPENSE'),
+    payload: z.object({
+        id: uuid,
+        title: z.string().min(1).max(120).optional(),
+        category: z.enum(['food', 'transport', 'stay', 'misc']).nullable().optional(),
+        amountMoney: paise.optional(),
+        paidByMember: uuid.optional(),
+    }),
+});
+
+const deleteExpenseQueueItemSchema = offlineQueueBaseSchema.extend({
+    type: z.literal('DELETE_EXPENSE'),
+    payload: z.object({
+        expenseId: uuid,
+        tripId: uuid,
+    }),
+});
+
+export const OfflineQueueItemSchema = z.discriminatedUnion('type', [
+    addExpenseQueueItemSchema,
+    editExpenseQueueItemSchema,
+    deleteExpenseQueueItemSchema,
+]);
+
+export type OfflineQueueItemValidated = z.infer<typeof OfflineQueueItemSchema>;

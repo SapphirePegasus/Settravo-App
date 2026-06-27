@@ -1,7 +1,7 @@
 /**
  * joinCode.ts
  *
- * Utilities for 6-character join codes with 30-minute TTL.
+ * Utilities for 4-character join codes with 30-minute TTL.
  * Codes are uppercase alphanumeric only (no 0/O or 1/I confusion).
  */
 
@@ -12,7 +12,7 @@ const CODE_LENGTH = 4;
 const TTL_MINUTES = 30;
 
 /**
- * Generate a cryptographically random 6-char join code.
+ * Generate a cryptographically random 4-char join code.
  * Uses Math.random only as a fallback — prefers crypto.getRandomValues.
  */
 export function generateJoinCode(): string {
