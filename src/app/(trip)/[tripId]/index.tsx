@@ -1,19 +1,36 @@
 /**
- * app/(trip)/[tripId]/index.tsx — Trip Detail screen (Phase 4)
+ * app/(trip)/[tripId]/index.tsx
  *
- * Phase 4 changes over Phase 3:
- *  - Members loaded via useMembers() → memberStore (shared with settle + add-expense).
- *  - "Send guest link" button in member list for guest members.
- *  - addGuestMember now calls memberStore.addMember() so the new member
- *    appears instantly in the settle screen too.
+ * Trip Detail screen — the main screen for a trip.
+ *
+ * Responsibilities:
+ *  - Load and display trip metadata (name, destination)
+ *  - Display members with avatar row; add guest members; share guest links
+ *  - Display settlement summary card
+ *  - Display expense list via ExpenseRow (swipe edit/delete)
+ *  - Footer: Add Expense, QR Share, Settle Up
+ *  - Header ⋯ menu: Share list, Edit Trip (creator), Leave Trip
+ *
+ * Architecture decisions:
+ *  - useMembers() / useExpenses() pull from shared Zustand stores —
+ *    no duplicate fetches when navigating between trip screens
+ *  - handleDeleteExpense supports offline queue (Phase 0 fix)
+ *  - useOfflineSync() is mounted in _layout.tsx, NOT here (Phase 0 fix)
+ *  - isDark derived from useColorScheme() solely for child components
+ *    (MemberAvatar, AddMemberModal) that have not yet migrated to
+ *    useThemeColors(). Remove this once those components are migrated.
  */
 
 import * as Crypto from 'expo-crypto';
+import * as Haptics from 'expo-haptics';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
-    ActivityIndicator, Alert, Modal,
-    Pressable, SectionList,
+    ActivityIndicator,
+    Alert,
+    Modal,
+    Pressable,
+    SectionList,
     Share,
     StyleSheet,
     Text,
@@ -24,10 +41,15 @@ import { AddMemberModal } from '../../../components/AddMemberModal';
 import { ConnectionBanner } from '../../../components/ConnectionBanner';
 import { ExpenseRow } from '../../../components/ExpenseRow';
 import { MemberAvatar } from '../../../components/MemberAvatar';
+import { ConfirmModal } from '../../../components/modals/ConfirmModal';
+import { EditTripModal } from '../../../components/trip/EditTripModal';
+import { TripMenuSheet } from '../../../components/trip/TripMenuSheet';
+import { useToast } from '../../../components/Toast';
+import { useThemeColors } from '../../../hooks/useThemeColors';
 import { useExpenses } from '../../../hooks/useExpenses';
 import { useMembers } from '../../../hooks/useMembers';
 import { deleteExpense } from '../../../services/expenseService';
-import { buildGuestUrl } from '../../../services/memberService';
+import { buildGuestUrl, leaveTrip } from '../../../services/memberService';
 import { addGuestMember, getTrip } from '../../../services/tripService';
 import { useAuthStore } from '../../../stores/authStore';
 import { useConnectionStore } from '../../../stores/connectionStore';
@@ -38,32 +60,38 @@ import type { Trip } from '../../../types/domain';
 import { formatRupees } from '../../../utils/money';
 import { calculateSettlements } from '../../../utils/settlement';
 
-// ─── Expense list share formatter ─────────────────────────────────────────────
+// ─── Types ────────────────────────────────────────────────────────────────────
 
-function buildShareText(trip: Trip, expenses: ReturnType<typeof useExpenses>['expenses'], members: ReturnType<typeof useMembers>): string {
-    const memberNameMap = new Map(members.map((m) => [m.id, m.displayName]));
+// SectionList requires typed sections
+type SectionData =
+    | { title: 'members'; data: ['members'] }
+    | { title: 'summary'; data: ['summary'] }
+    | { title: 'expenses'; data: string[] };   // expense IDs
 
+// ─── Share text builder ───────────────────────────────────────────────────────
+
+const CATEGORY_EMOJI: Record<string, string> = {
+    food: '🍽', transport: '🚗', stay: '🏨', misc: '📦',
+};
+
+function buildShareText(
+    trip: Trip,
+    expenses: { id: string; title: string; category: string | null; amountMoney: number; paidByMember: string }[],
+    memberNameMap: Map<string, string>,
+): string {
     const totalPaise = expenses.reduce((sum, e) => sum + e.amountMoney, 0);
 
-    const CATEGORY_EMOJI: Record<string, string> = {
-        food: '🍽',
-        transport: '🚗',
-        stay: '🏨',
-        misc: '📦',
-    };
-
-    const lines: string[] = [];
-    lines.push(`🧳 *${trip.name}${trip.destination ? ` — ${trip.destination}` : ''}*`);
-    lines.push('');
-    lines.push('📋 *Expense List*');
-    lines.push('─────────────────');
+    const lines: string[] = [
+        `🧳 *${trip.name}${trip.destination ? ` — ${trip.destination}` : ''}*`,
+        '',
+        '📋 *Expense List*',
+        '─────────────────',
+    ];
 
     for (const expense of [...expenses].reverse()) {
-        // oldest first for chronological reading
         const emoji = expense.category ? (CATEGORY_EMOJI[expense.category] ?? '💳') : '💳';
         const payer = memberNameMap.get(expense.paidByMember) ?? '?';
-        const rupees = formatRupees(expense.amountMoney);
-        lines.push(`${emoji} ${expense.title} — ${rupees} _(paid by ${payer})_`);
+        lines.push(`${emoji} ${expense.title} — ${formatRupees(expense.amountMoney)} _(paid by ${payer})_`);
     }
 
     lines.push('─────────────────');
@@ -74,56 +102,145 @@ function buildShareText(trip: Trip, expenses: ReturnType<typeof useExpenses>['ex
     return lines.join('\n');
 }
 
+// ─── Screen ───────────────────────────────────────────────────────────────────
+
 export default function TripDetailScreen() {
     const { tripId } = useLocalSearchParams<{ tripId: string }>();
     const router = useRouter();
     const navigation = useNavigation();
-    const scheme = useColorScheme();
-    const isDark = scheme === 'dark';
-    const colors = isDark ? dark : light;
+    const colors = useThemeColors();
+    const { showToast } = useToast();
 
+    // isDark is kept only for child components (MemberAvatar, AddMemberModal)
+    // that still accept isDark prop. Remove once those are migrated.
+    const isDark = useColorScheme() === 'dark';
+
+    // ── Store selectors ───────────────────────────────────────────────────────
     const deviceUser = useAuthStore((s) => s.deviceUser);
     const splits = useExpenseStore((s) => s.splits);
     const removeExpenseFromStore = useExpenseStore((s) => s.removeExpense);
     const storeMember = useMemberStore((s) => s.addMember);
-
+    const removeMemberFromStore = useMemberStore((s) => s.removeMember);
     const networkOnline = useConnectionStore((s) => s.networkOnline);
     const enqueueOfflineItem = useTripStore((s) => s.enqueueOfflineItem);
 
+    // ── Local state ───────────────────────────────────────────────────────────
     const [trip, setTrip] = useState<Trip | null>(null);
     const [tripLoading, setTripLoading] = useState(true);
     const [addMemberVisible, setAddMemberVisible] = useState(false);
+    const [menuVisible, setMenuVisible] = useState(false);
+    const [editTripVisible, setEditTripVisible] = useState(false);
+    const [leaveVisible, setLeaveVisible] = useState(false);
 
+    // ── Data hooks ────────────────────────────────────────────────────────────
     const members = useMembers(tripId ?? '');
     const { expenses, isLoading: expensesLoading, reconnectRealtime } = useExpenses(tripId ?? '');
 
+    // ── Derived values ────────────────────────────────────────────────────────
+    const myMember = useMemo(
+        () => members.find((m) => m.deviceId === deviceUser?.id),
+        [members, deviceUser?.id],
+    );
+
+    const isCreator = trip?.createdByDevice === deviceUser?.id;
+
+    const memberNameMap = useMemo(
+        () => new Map(members.map((m) => [m.id, m.displayName])),
+        [members],
+    );
+
+    const allSplits = useMemo(
+        () => Object.values(splits).flat(),
+        [splits],
+    );
+
+    const settlements = useMemo(
+        () => calculateSettlements(expenses, allSplits, members),
+        [expenses, allSplits, members],
+    );
+
+    const allSettled = expenses.length > 0 && settlements.length === 0;
+
+    const sections: SectionData[] = useMemo(() => [
+        { title: 'members', data: ['members'] as ['members'] },
+        { title: 'summary', data: ['summary'] as ['summary'] },
+        { title: 'expenses', data: expenses.map((e) => e.id) },
+    ], [expenses]);
+
+    // ── Trip load ─────────────────────────────────────────────────────────────
     const loadTrip = useCallback(async () => {
         if (!tripId) return;
         setTripLoading(true);
         try {
-            const fetchedTrip = await getTrip(tripId);
-            if (fetchedTrip) {
-                setTrip(fetchedTrip);
-                navigation.setOptions({ title: fetchedTrip.name });
+            const fetched = await getTrip(tripId);
+            if (fetched) {
+                setTrip(fetched);
+                navigation.setOptions({ title: fetched.name });
             }
+        } catch (err) {
+            showToast({
+                message: err instanceof Error ? err.message : 'Could not load trip.',
+                variant: 'error',
+            });
         } finally {
             setTripLoading(false);
         }
-    }, [tripId, navigation]);
+    }, [tripId, navigation, showToast]);
+
+    // Set header right button once trip loads
+    useEffect(() => {
+        navigation.setOptions({
+            headerRight: () => (
+                <Pressable
+                    onPress={() => setMenuVisible(true)}
+                    style={styles.headerMenuBtn}
+                    accessibilityLabel="Trip options"
+                    accessibilityRole="button"
+                    hitSlop={8}
+                >
+                    <Text style={[styles.headerMenuIcon, { color: colors.accent }]}>⋯</Text>
+                </Pressable>
+            ),
+        });
+    }, [navigation, colors.accent]);
 
     useEffect(() => { loadTrip(); }, [loadTrip]);
 
-    const myMember = members.find((m) => m.deviceId === deviceUser?.id);
+    // ── Menu actions ──────────────────────────────────────────────────────────
+    const menuActions = useMemo(() => [
+        {
+            label: 'Share expense list',
+            icon: '📤',
+            onPress: async () => {
+                if (!trip || expenses.length === 0) {
+                    showToast({ message: 'No expenses to share yet.', variant: 'info' });
+                    return;
+                }
+                try {
+                    await Share.share({ message: buildShareText(trip, expenses, memberNameMap) });
+                } catch {
+                    // User cancelled share sheet — not an error
+                }
+            },
+        },
+        ...(isCreator ? [{
+            label: 'Edit trip',
+            icon: '✏️',
+            onPress: () => setEditTripVisible(true),
+        }] : []),
+        {
+            label: 'Leave trip',
+            icon: '🚪',
+            variant: 'destructive' as const,
+            onPress: () => setLeaveVisible(true),
+        },
+    ], [trip, expenses, memberNameMap, isCreator, showToast]);
 
-    const allSplits = Object.values(splits).flat();
-    const settlements = calculateSettlements(expenses, allSplits, members);
-    const allSettled = expenses.length > 0 && settlements.length === 0;
-
-    const handleDeleteExpense = useCallback(async (expenseId: string) => {
+    // ── Handlers ──────────────────────────────────────────────────────────────
+    const handleDeleteExpense = useCallback(async (expenseId: string): Promise<void> => {
         if (!tripId) return;
 
         if (!networkOnline) {
-            // Optimistic remove — will be synced to the server on reconnect
             removeExpenseFromStore(tripId, expenseId);
             await enqueueOfflineItem({
                 type: 'DELETE_EXPENSE',
@@ -132,179 +249,250 @@ export default function TripDetailScreen() {
                 lastFailedAt: null,
                 payload: { expenseId, tripId },
             });
+            showToast({ message: 'Delete queued — will sync when online', variant: 'info' });
             return;
         }
 
         try {
             await deleteExpense(expenseId);
             removeExpenseFromStore(tripId, expenseId);
+            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+            showToast({ message: 'Expense deleted', variant: 'info' });
         } catch (err) {
-            Alert.alert('Error', err instanceof Error ? err.message : 'Could not delete.');
+            showToast({
+                message: err instanceof Error ? err.message : 'Could not delete expense.',
+                variant: 'error',
+            });
         }
-    }, [tripId, networkOnline, removeExpenseFromStore, enqueueOfflineItem]);
+    }, [tripId, networkOnline, removeExpenseFromStore, enqueueOfflineItem, showToast]);
 
-    const handleAddMember = useCallback(async (name: string) => {
+    const handleEditExpense = useCallback((expenseId: string) => {
+        router.push(`/(trip)/${tripId}/add-expense?expenseId=${expenseId}`);
+    }, [tripId, router]);
+
+    const handleAddMember = useCallback(async (name: string): Promise<void> => {
         if (!tripId) return;
         const newMember = await addGuestMember(tripId, name);
         storeMember(tripId, newMember);
     }, [tripId, storeMember]);
 
-    const handleShareGuestLink = useCallback(async (memberId: string) => {
+    const handleShareGuestLink = useCallback(async (memberId: string): Promise<void> => {
         const member = members.find((m) => m.id === memberId);
         if (!member) return;
         const url = buildGuestUrl(member);
         if (!url) {
-            Alert.alert('App user', `${member.displayName} already has the app.`);
+            showToast({ message: `${member.displayName} already has the app.`, variant: 'info' });
             return;
         }
-        await Share.share({
-            message: `Hi ${member.displayName}! Check your trip balance here:\n${url}`,
-            url,
-        });
-    }, [members]);
+        try {
+            await Share.share({
+                message: `Hi ${member.displayName}! Check your trip balance here:\n${url}`,
+                url,
+            });
+        } catch {
+            // User cancelled
+        }
+    }, [members, showToast]);
 
-    const handleShareExpenseList = useCallback(async () => {
-        if (!trip || expenses.length === 0) return;
-        const text = buildShareText(trip, expenses, members);
-        await Share.share({ message: text });
-    }, [trip, expenses, members]);
+    const handleLeaveTrip = useCallback(async (): Promise<void> => {
+        if (!myMember || !tripId) return;
+        try {
+            await leaveTrip(myMember.id);
+            removeMemberFromStore(tripId, myMember.id);
+            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
+            showToast({ message: 'You have left the trip', variant: 'info' });
+            router.replace('/');
+        } catch (err) {
+            showToast({
+                message: err instanceof Error ? err.message : 'Could not leave trip.',
+                variant: 'error',
+            });
+        }
+    }, [myMember, tripId, removeMemberFromStore, router, showToast]);
 
+    // ── Section renderer ──────────────────────────────────────────────────────
+    const renderItem = useCallback(({ item, section }: { item: string; section: SectionData }) => {
+        // Members section
+        if (section.title === 'members') {
+            return (
+                <View style={[styles.card, { backgroundColor: colors.card }]}>
+                    <View style={styles.cardHeader}>
+                        <Text style={[styles.cardTitle, { color: colors.text }]}>
+                            Members ({members.length})
+                        </Text>
+                        <Pressable
+                            onPress={() => setAddMemberVisible(true)}
+                            hitSlop={8}
+                            accessibilityRole="button"
+                            accessibilityLabel="Add member"
+                        >
+                            <Text style={[styles.cardAction, { color: colors.accent }]}>+ Add</Text>
+                        </Pressable>
+                    </View>
+
+                    <View style={styles.membersRow}>
+                        {members.map((m) => (
+                            <Pressable
+                                key={m.id}
+                                onLongPress={() => {
+                                    if (m.isGuest) void handleShareGuestLink(m.id);
+                                }}
+                                accessibilityLabel={
+                                    m.isGuest
+                                        ? `${m.displayName} (guest) — long press to share link`
+                                        : m.displayName
+                                }
+                            >
+                                <MemberAvatar
+                                    member={m}
+                                    isDark={isDark}
+                                    allMembers={members}
+                                />
+                            </Pressable>
+                        ))}
+                    </View>
+
+                    {members.some((m) => m.isGuest) && (
+                        <Text style={[styles.guestHint, { color: colors.subText }]}>
+                            Long-press a guest to share their balance link.
+                        </Text>
+                    )}
+                </View>
+            );
+        }
+
+        // Settlement summary section
+        if (section.title === 'summary') {
+            if (allSettled) {
+                return (
+                    <View style={[styles.card, { backgroundColor: colors.card }]}>
+                        <Text style={[styles.allSettledText, { color: colors.accentSuccess }]}>
+                            All Settled! 🎉
+                        </Text>
+                    </View>
+                );
+            }
+            if (settlements.length === 0) return null;
+
+            const preview = settlements.slice(0, 2);
+            return (
+                <View style={[styles.card, { backgroundColor: colors.card }]}>
+                    <Text style={[styles.cardTitle, { color: colors.text }]}>Settlements</Text>
+                    {preview.map((s, i) => (
+                        <Text key={i} style={[styles.settlementLine, { color: colors.subText }]}>
+                            {s.fromMemberName} → {s.toMemberName}: {formatRupees(s.amountMoney)}
+                        </Text>
+                    ))}
+                    <Pressable
+                        onPress={() => router.push(`/(trip)/${tripId}/settle`)}
+                        hitSlop={8}
+                    >
+                        <Text style={[styles.cardAction, { color: colors.accent, marginTop: 8 }]}>
+                            {settlements.length > 2
+                                ? `See all ${settlements.length} →`
+                                : 'Full settle plan →'}
+                        </Text>
+                    </Pressable>
+                </View>
+            );
+        }
+
+        // Expense row
+        if (section.title === 'expenses') {
+            const expense = expenses.find((e) => e.id === item);
+            if (!expense) return null;
+            return (
+                <View style={styles.expenseRowWrapper}>
+                    <ExpenseRow
+                        expense={expense}
+                        members={members}
+                        currentMemberId={myMember?.id}
+                        onDelete={handleDeleteExpense}
+                        onEdit={handleEditExpense}
+                    />
+                </View>
+            );
+        }
+
+        return null;
+    }, [
+        colors, members, isDark, allSettled, settlements, expenses,
+        myMember, tripId, router,
+        handleShareGuestLink, handleDeleteExpense, handleEditExpense,
+    ]);
+
+    const renderSectionHeader = useCallback(
+        ({ section }: { section: SectionData }) => {
+            if (section.title !== 'expenses' || expenses.length === 0) return null;
+            return (
+                <View style={styles.expensesHeader}>
+                    <Text style={[styles.sectionLabel, { color: colors.subText }]}>
+                        Expenses ({expenses.length})
+                    </Text>
+                </View>
+            );
+        },
+        [expenses.length, colors.subText],
+    );
+
+    const ListEmptyComponent = useMemo(() => {
+        if (expensesLoading) return null;
+        return (
+            <View style={[styles.emptyCard, { backgroundColor: colors.card }]}>
+                <Text style={[styles.emptyText, { color: colors.subText }]}>
+                    No expenses yet. Tap Add Expense to get started.
+                </Text>
+            </View>
+        );
+    }, [expensesLoading, colors.card, colors.subText]);
+
+    // ── Loading state ─────────────────────────────────────────────────────────
     if (tripLoading) {
         return (
             <View style={[styles.centered, { backgroundColor: colors.bg }]}>
-                <ActivityIndicator color={isDark ? '#fff' : '#000'} />
+                <ActivityIndicator color={colors.accent} />
             </View>
         );
     }
 
-    const sections = [
-        { title: 'members', data: ['members'] as string[] },
-        { title: 'summary', data: ['summary'] as string[] },
-        { title: 'expenses', data: expenses.map((e) => e.id) },
-    ];
-
+    // ── Render ────────────────────────────────────────────────────────────────
     return (
         <View style={[styles.root, { backgroundColor: colors.bg }]}>
             <ConnectionBanner onReconnect={reconnectRealtime} />
 
-            <SectionList
+            <SectionList<string, SectionData>
                 sections={sections}
                 keyExtractor={(item) => item}
                 contentContainerStyle={styles.content}
                 stickySectionHeadersEnabled={false}
                 showsVerticalScrollIndicator={false}
-                renderSectionHeader={({ section }) =>
-                    section.title === 'expenses' && expenses.length > 0 ? (
-                        <View style={styles.expensesHeader}>
-                            <Text style={[styles.sectionLabel, { color: colors.subText }]}>Expenses</Text>
-                            {expenses.length > 0 && (
-                                <Pressable onPress={handleShareExpenseList} hitSlop={8}>
-                                    <Text style={[styles.shareListBtn, { color: colors.accent }]}>
-                                        Share List
-                                    </Text>
-                                </Pressable>
-                            )}
-                        </View>
-                    ) : null
-                }
-                renderItem={({ item, section }) => {
-                    if (section.title === 'members') {
-                        return (
-                            <View style={[styles.card, { backgroundColor: colors.card }]}>
-                                <View style={styles.cardHeader}>
-                                    <Text style={[styles.cardTitle, { color: colors.text }]}>Members</Text>
-                                    <Pressable onPress={() => setAddMemberVisible(true)}>
-                                        <Text style={[styles.cardAction, { color: colors.accent }]}>+ Add</Text>
-                                    </Pressable>
-                                </View>
-                                <View style={styles.membersRow}>
-                                    {members.map((m) => (
-                                        <Pressable
-                                            key={m.id}
-                                            onLongPress={() => m.isGuest && handleShareGuestLink(m.id)}
-                                        >
-                                            <MemberAvatar member={m} isDark={isDark} allMembers={members} />
-                                        </Pressable>
-                                    ))}
-                                </View>
-                                {members.some((m) => m.isGuest) && (
-                                    <Text style={[styles.guestHint, { color: colors.subText }]}>
-                                        Long-press a guest member to share their balance link.
-                                    </Text>
-                                )}
-                            </View>
-                        );
-                    }
-
-                    if (section.title === 'summary') {
-                        if (allSettled) {
-                            return (
-                                <View style={[styles.card, { backgroundColor: colors.card }]}>
-                                    <Text style={[styles.allSettledText, { color: colors.settled }]}>
-                                        All Settled! 🎉
-                                    </Text>
-                                </View>
-                            );
-                        }
-                        if (settlements.length === 0) return null;
-                        const preview = settlements.slice(0, 2);
-                        return (
-                            <View style={[styles.card, { backgroundColor: colors.card }]}>
-                                <Text style={[styles.cardTitle, { color: colors.text }]}>Settlements</Text>
-                                {preview.map((s, i) => (
-                                    <Text key={i} style={[styles.settlementLine, { color: colors.subText }]}>
-                                        {s.fromMemberName} → {s.toMemberName}: {formatRupees(s.amountMoney)}
-                                    </Text>
-                                ))}
-                                <Pressable onPress={() => router.push(`/(trip)/${tripId}/settle`)}>
-                                    <Text style={[styles.cardAction, { color: colors.accent, marginTop: 8 }]}>
-                                        {settlements.length > 2
-                                            ? `See all ${settlements.length} →`
-                                            : 'Full settle plan →'}
-                                    </Text>
-                                </Pressable>
-                            </View>
-                        );
-                    }
-
-                    const expense = expenses.find((e) => e.id === item);
-                    if (!expense) return null;
-                    return (
-                        <View style={{ marginBottom: 10 }}>
-                            <ExpenseRow
-                                expense={expense}
-                                members={members}
-                                isDark={isDark}
-                                currentMemberId={myMember?.id}
-                                onDelete={handleDeleteExpense}
-                            />
-                        </View>
-                    );
-                }}
-                ListEmptyComponent={
-                    !expensesLoading ? (
-                        <View style={[styles.emptyCard, { backgroundColor: colors.card }]}>
-                            <Text style={[styles.emptyText, { color: colors.subText }]}>
-                                No expenses yet. Add the first one!
-                            </Text>
-                        </View>
-                    ) : null
-                }
+                renderSectionHeader={renderSectionHeader}
+                renderItem={renderItem}
+                ListEmptyComponent={ListEmptyComponent}
+                // Prevent the list from stealing swipeable gesture events
+                removeClippedSubviews={false}
             />
 
-            {/* Footer buttons */}
-            <View style={[styles.footer, { borderTopColor: colors.separator, backgroundColor: colors.bg }]}>
+            {/* Footer */}
+            <View style={[styles.footer, {
+                borderTopColor: colors.separator,
+                backgroundColor: colors.bg,
+            }]}>
                 <Pressable
                     style={[styles.footerIconBtn, { backgroundColor: colors.card }]}
                     onPress={() => router.push(`/(trip)/${tripId}/qr`)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Share QR code"
                 >
                     <Text style={styles.footerBtnIcon}>📤</Text>
-                    <Text style={[styles.footerBtnLabel, { color: isDark ? '#ffffff' : '#000000' }]}>SHARE</Text>
+                    <Text style={[styles.footerBtnLabel, { color: colors.text }]}>SHARE</Text>
                 </Pressable>
 
                 <Pressable
                     style={[styles.footerMainBtn, { backgroundColor: colors.accent }]}
                     onPress={() => router.push(`/(trip)/${tripId}/add-expense`)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Add expense"
                 >
                     <Text style={styles.footerMainBtnText}>Add Expense</Text>
                 </Pressable>
@@ -312,12 +500,15 @@ export default function TripDetailScreen() {
                 <Pressable
                     style={[styles.footerIconBtn, { backgroundColor: colors.card }]}
                     onPress={() => router.push(`/(trip)/${tripId}/settle`)}
+                    accessibilityRole="button"
+                    accessibilityLabel="Settle up"
                 >
                     <Text style={styles.footerBtnIcon}>💵</Text>
-                    <Text style={[styles.footerBtnLabel, { color: isDark ? '#ffffff' : '#000000' }]}>SETTLE</Text>
+                    <Text style={[styles.footerBtnLabel, { color: colors.text }]}>SETTLE</Text>
                 </Pressable>
             </View>
 
+            {/* Add Member modal */}
             <Modal
                 visible={addMemberVisible}
                 animationType="slide"
@@ -333,30 +524,85 @@ export default function TripDetailScreen() {
                     }}
                 />
             </Modal>
+
+            {/* ⋯ menu */}
+            <TripMenuSheet
+                visible={menuVisible}
+                onClose={() => setMenuVisible(false)}
+                actions={menuActions}
+            />
+
+            {/* Edit trip modal — creator only */}
+            {trip && (
+                <EditTripModal
+                    visible={editTripVisible}
+                    trip={trip}
+                    onClose={() => setEditTripVisible(false)}
+                    onUpdated={(updated) => {
+                        setTrip(updated);
+                        navigation.setOptions({ title: updated.name });
+                    }}
+                />
+            )}
+
+            {/* Leave trip confirmation */}
+            <ConfirmModal
+                visible={leaveVisible}
+                title="Leave this trip?"
+                message="You will lose access to all expenses and settlements. You can rejoin with the trip code."
+                confirmLabel="Leave Trip"
+                confirmVariant="destructive"
+                onConfirm={handleLeaveTrip}
+                onCancel={() => setLeaveVisible(false)}
+            />
         </View>
     );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
     root: { flex: 1 },
     centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-    headerTitle: { fontSize: 28, fontWeight: '700' },
-    headerSub: { fontSize: 14, marginTop: 2 },
+
+    headerMenuBtn: { paddingHorizontal: 16, paddingVertical: 8 },
+    headerMenuIcon: { fontSize: 24, fontWeight: '600' },
 
     content: { padding: 16, gap: 12, paddingBottom: 24 },
+
     card: { borderRadius: 16, padding: 16 },
-    cardHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 },
+    cardHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 12,
+    },
     cardTitle: { fontSize: 17, fontWeight: '600' },
     cardAction: { fontSize: 15, fontWeight: '500' },
+
     membersRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
     guestHint: { fontSize: 12, marginTop: 10 },
+
     settlementLine: { fontSize: 14, marginTop: 6 },
-    expensesHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8, marginTop: 4 },
-    shareListBtn: { fontSize: 13, fontWeight: '500' },
-    allSettledText: { fontSize: 18, fontWeight: '700', textAlign: 'center', paddingVertical: 4 },
-    sectionLabel: { fontSize: 13, fontWeight: '500', marginBottom: 8, marginTop: 4 },
+
+    allSettledText: {
+        fontSize: 18, fontWeight: '700',
+        textAlign: 'center', paddingVertical: 4,
+    },
+
+    expensesHeader: {
+        flexDirection: 'row',
+        justifyContent: 'space-between',
+        alignItems: 'center',
+        marginBottom: 8,
+        marginTop: 4,
+    },
+    sectionLabel: { fontSize: 13, fontWeight: '500' },
+
+    expenseRowWrapper: { marginBottom: 10 },
+
     emptyCard: { borderRadius: 16, padding: 24, alignItems: 'center' },
-    emptyText: { fontSize: 15, textAlign: 'center' },
+    emptyText: { fontSize: 15, textAlign: 'center', lineHeight: 22 },
 
     footer: {
         flexDirection: 'row',
@@ -386,24 +632,3 @@ const styles = StyleSheet.create({
     },
     footerMainBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
 });
-
-const light = {
-    bg: '#f2f2f7',
-    headerBg: '#e8e8ed',
-    text: '#000000',
-    subText: '#6c6c70',
-    card: '#ffffff',
-    accent: '#007aff',
-    separator: '#c6c6c8',
-    settled: '#34c759',
-};
-const dark = {
-    bg: '#000000',
-    headerBg: '#1c1c1e',
-    text: '#ffffff',
-    subText: '#8e8e93',
-    card: '#1c1c1e',
-    accent: '#0a84ff',
-    separator: '#38383a',
-    settled: '#30d158',
-};

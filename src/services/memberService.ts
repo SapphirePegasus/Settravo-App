@@ -18,7 +18,7 @@ import type { Database } from '../types/supabase';
 
 type MemberRow = Database['public']['Tables']['TravelAppMembers']['Row'];
 
-function mapMember(row: MemberRow): Member {
+export function mapMember(row: MemberRow): Member {
     return {
         id: row.id,
         tripId: row.trip_id,

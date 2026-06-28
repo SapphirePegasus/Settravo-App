@@ -27,14 +27,13 @@ import { getTrip, regenerateJoinCode } from '../../../services/tripService';
 import { useTripStore } from '../../../stores/tripStore';
 import type { Trip } from '../../../types/domain';
 import { isJoinCodeExpired, joinCodeSecondsRemaining } from '../../../utils/joinCode';
+import { useThemeColors } from '../../../hooks/useThemeColors';
 
 const QR_PREFIX = 'settravo://join?code=';
 
 export default function QRScreen() {
     const { tripId } = useLocalSearchParams<{ tripId: string }>();
-    const scheme = useColorScheme();
-    const isDark = scheme === 'dark';
-    const colors = isDark ? dark : light;
+    const colors = useThemeColors();
 
     const members = useMembers(tripId ?? '');
     const guestMembers = members.filter((m) => m.isGuest && m.guestToken);
@@ -107,7 +106,7 @@ export default function QRScreen() {
     if (loading) {
         return (
             <View style={[styles.centered, { backgroundColor: colors.bg }]}>
-                <ActivityIndicator color={isDark ? '#fff' : '#000'} />
+                <ActivityIndicator color={colors.bg} />
             </View>
         );
     }
@@ -138,7 +137,7 @@ export default function QRScreen() {
             {!expired && trip?.joinCode && (
                 <>
                     <Text style={[styles.codeDisplay, { color: colors.text }]}>{trip.joinCode}</Text>
-                    <Text style={[styles.countdown, { color: secondsLeft < 120 ? colors.warning : colors.subText }]}>
+                    <Text style={[styles.countdown, { color: secondsLeft < 120 ? colors.warningText : colors.subText }]}>
                         Expires in {fmt(secondsLeft)}
                     </Text>
                 </>
@@ -151,7 +150,7 @@ export default function QRScreen() {
                     onPress={handleRegenerate}
                     disabled={regenerating}
                 >
-                    {regenerating ? <ActivityIndicator color={isDark ? '#fff' : '#000'} /> : (
+                    {regenerating ? <ActivityIndicator color={colors.text} /> : (
                         <Text style={[styles.secondaryBtnText, { color: colors.text }]}>
                             {expired ? 'Generate New Code' : 'Regenerate'}
                         </Text>
@@ -219,6 +218,3 @@ const styles = StyleSheet.create({
     guestLinkName: { fontSize: 16, fontWeight: '500' },
     guestLinkAction: { fontSize: 15, fontWeight: '500' },
 });
-
-const light = { bg: '#f2f2f7', text: '#000000', subText: '#6c6c70', card: '#ffffff', accent: '#007aff', warning: '#ff9500' };
-const dark = { bg: '#000000', text: '#ffffff', subText: '#8e8e93', card: '#1c1c1e', accent: '#0a84ff', warning: '#ff9f0a' };

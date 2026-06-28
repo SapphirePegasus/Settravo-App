@@ -20,8 +20,10 @@ import { useTrips } from '../hooks/useTrips';
 import { useAuthStore } from '../stores/authStore';
 import { useTripStore } from '../stores/tripStore';
 import type { Trip } from '../types/domain';
+import { useThemeColors } from '../hooks/useThemeColors';
 
-const TRIP_EMOJIS = ['🏕️', '🏞️', '🛣️', '🏖️', '🏜️', '🏛️', '🏙️', '🌉', '🌅'];
+
+const TRIP_EMOJIS = ['🏕️', '🏞️', '🛣️', '🏖️', '🏜️', '🏙️', '🌉', '🌅'];
 
 function getTripEmoji(tripId: string): string {
   let hash = 0;
@@ -50,7 +52,7 @@ function TripCard({
   isDark: boolean;
   onPress: () => void;
 }) {
-  const colors = isDark ? dark : light;
+  const colors = useThemeColors();
   const emoji = getTripEmoji(trip.id);
   const dateLabel = formatDateRange(trip.startDate, trip.endDate);
 
@@ -87,9 +89,8 @@ function TripCard({
 
 export default function HomeScreen() {
   const router = useRouter();
-  const scheme = useColorScheme();
-  const isDark = scheme === 'dark';
-  const colors = isDark ? dark : light;
+  const colors = useThemeColors();
+  const isDark = useColorScheme() === 'dark';
 
   const deviceUser = useAuthStore((s) => s.deviceUser);
   const { trips, isLoading, refresh } = useTrips();
@@ -123,7 +124,7 @@ export default function HomeScreen() {
         ListHeaderComponent={
           <View style={[styles.header, { backgroundColor: colors.headerBg }]}>
             <Text style={[styles.greeting, { color: colors.subText }]}>
-              Hey, {deviceUser?.displayName ?? '—'} 
+              Hey, {deviceUser?.displayName ?? '—'}
             </Text>
             <Text style={[styles.title, { color: colors.text }]}>My Trips</Text>
           </View>
@@ -244,24 +245,3 @@ const styles = StyleSheet.create({
   },
   secondaryButtonText: { fontSize: 16, fontWeight: '500' },
 });
-
-const light = {
-  bg: '#f2f2f7',
-  headerBg: '#e8e8ed',
-  text: '#000000',
-  subText: '#6c6c70',
-  card: '#ffffff',
-  emojiBox: '#f2f2f7',
-  accent: '#007aff',
-  separator: '#c6c6c8',
-};
-const dark = {
-  bg: '#000000',
-  headerBg: '#1c1c1e',
-  text: '#ffffff',
-  subText: '#8e8e93',
-  card: '#1c1c1e',
-  emojiBox: '#2c2c2e',
-  accent: '#0a84ff',
-  separator: '#38383a',
-};

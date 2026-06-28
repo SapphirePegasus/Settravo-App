@@ -21,6 +21,7 @@ import {
     type CreateTripInput,
     type JoinTripInput,
 } from '../validation/schemas';
+import { mapMember } from './memberService';
 
 type TripRow = Database['public']['Tables']['TravelAppTrips']['Row'];
 type MemberRow = Database['public']['Tables']['TravelAppMembers']['Row'];
@@ -36,18 +37,6 @@ function mapTrip(row: TripRow): Trip {
         createdAt: row.created_at,
         joinCode: row.join_code,
         joinCodeExpiresAt: row.join_code_expires_at,
-    };
-}
-
-function mapMember(row: MemberRow): Member {
-    return {
-        id: row.id,
-        tripId: row.trip_id,
-        deviceId: row.device_id,
-        displayName: row.display_name,
-        joinedAt: row.joined_at,
-        guestToken: row.guest_token,
-        isGuest: row.device_id === null,
     };
 }
 

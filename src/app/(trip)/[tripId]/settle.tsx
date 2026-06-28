@@ -33,12 +33,11 @@ import { useExpenseStore } from '../../../stores/expenseStore';
 import type { Settlement } from '../../../types/domain';
 import { formatRupees } from '../../../utils/money';
 import { calculateSettlements } from '../../../utils/settlement';
+import { useThemeColors } from '../../../hooks/useThemeColors';
 
 export default function SettleScreen() {
     const { tripId } = useLocalSearchParams<{ tripId: string }>();
-    const scheme = useColorScheme();
-    const isDark = scheme === 'dark';
-    const colors = isDark ? dark : light;
+    const colors = useThemeColors();
 
     const members = useMembers(tripId ?? '');
 
@@ -190,7 +189,7 @@ export default function SettleScreen() {
     if (expenses.length > 0 && members.length === 0) {
         return (
             <View style={[styles.centered, { backgroundColor: colors.bg }]}>
-                <ActivityIndicator color={isDark ? '#fff' : '#000'} />
+                <ActivityIndicator color={colors.text} />
             </View>
         );
     }
@@ -386,12 +385,3 @@ const styles = StyleSheet.create({
     },
     actionBtnText: { fontSize: 13, fontWeight: '600' },
 });
-
-const light = {
-    bg: '#f2f2f7', text: '#000000', subText: '#6c6c70',
-    card: '#ffffff', accent: '#007aff', border: '#c6c6c8', settled: '#34c759',
-};
-const dark = {
-    bg: '#000000', text: '#ffffff', subText: '#8e8e93',
-    card: '#1c1c1e', accent: '#0a84ff', border: '#38383a', settled: '#30d158',
-};

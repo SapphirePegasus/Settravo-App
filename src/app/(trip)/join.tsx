@@ -31,14 +31,13 @@ import {
 import { joinTrip } from '../../services/tripService';
 import { useAuthStore } from '../../stores/authStore';
 import { useTripStore } from '../../stores/tripStore';
+import { useThemeColors } from '../../hooks/useThemeColors';
 
 const QR_PREFIX = 'settravo://join?code=';
 
 export default function JoinScreen() {
     const router = useRouter();
-    const scheme = useColorScheme();
-    const isDark = scheme === 'dark';
-    const colors = isDark ? dark : light;
+    const colors = useThemeColors();
 
     const deviceUser = useAuthStore((s) => s.deviceUser);
     const addTrip = useTripStore((s) => s.addTrip);
@@ -186,6 +185,3 @@ const styles = StyleSheet.create({
     joinButton: { height: 52, borderRadius: 14, alignItems: 'center', justifyContent: 'center', marginTop: 8 },
     joinText: { color: '#fff', fontSize: 17, fontWeight: '600' },
 });
-
-const light = { bg: '#f2f2f7', text: '#000000', subText: '#6c6c70', card: '#ffffff', inputBg: '#ffffff', border: '#c6c6c8', placeholder: '#8e8e93', accent: '#007aff', error: '#ff3b30' };
-const dark = { bg: '#000000', text: '#ffffff', subText: '#8e8e93', card: '#1c1c1e', inputBg: '#1c1c1e', border: '#38383a', placeholder: '#636366', accent: '#0a84ff', error: '#ff453a' };

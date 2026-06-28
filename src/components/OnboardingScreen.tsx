@@ -28,19 +28,17 @@ import {
 import { ZodError } from 'zod';
 import { useAuthStore } from '../stores/authStore';
 import { UpdateDisplayNameSchema } from '../validation/schemas';
+import { useThemeColors } from '../hooks/useThemeColors';
 
-interface Props {
-    isDark: boolean;
-}
 
-export function OnboardingScreen({ isDark }: Props) {
+export function OnboardingScreen() {
     const setDisplayName = useAuthStore((s) => s.setDisplayName);
 
     const [name, setName] = useState('');
     const [error, setError] = useState<string | null>(null);
     const [loading, setLoading] = useState(false);
 
-    const colors = isDark ? dark : light;
+    const colors = useThemeColors();
 
     async function handleSubmit() {
         setError(null);
