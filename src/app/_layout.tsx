@@ -23,6 +23,7 @@ import { subscribeToAuthChanges, useAuthStore } from '../stores/authStore';
 import { useConnectionStore } from '../stores/connectionStore';
 import { ToastProvider } from '../components/Toast';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
 
 // ─── Sentry initialisation ────────────────────────────────────────────────────
 // Must run before any component renders so the first frame is already instrumented.
@@ -116,23 +117,25 @@ export default function RootLayout() {
     }
 
     return (
-        <SafeAreaProvider>
-            <ToastProvider>
-                <AppErrorBoundary>
-                    <Stack
-                        screenOptions={{
-                            headerStyle: { backgroundColor: isDark ? '#1c1c1e' : '#f2f2f7' },
-                            headerTintColor: isDark ? '#ffffff' : '#000000',
-                            headerShadowVisible: false,
-                            contentStyle: { backgroundColor: isDark ? '#000000' : '#f2f2f7' },
-                        }}
-                    >
-                        <Stack.Screen name="index" options={{ title: '' }} />
-                        <Stack.Screen name="(trip)" options={{ headerShown: false }} />
-                    </Stack>
-                </AppErrorBoundary>
-            </ToastProvider>
-        </SafeAreaProvider>
+        <GestureHandlerRootView style={{ flex: 1 }}>
+            <SafeAreaProvider>
+                <ToastProvider>
+                    <AppErrorBoundary>
+                        <Stack
+                            screenOptions={{
+                                headerStyle: { backgroundColor: isDark ? '#1c1c1e' : '#f2f2f7' },
+                                headerTintColor: isDark ? '#ffffff' : '#000000',
+                                headerShadowVisible: false,
+                                contentStyle: { backgroundColor: isDark ? '#000000' : '#f2f2f7' },
+                            }}
+                        >
+                            <Stack.Screen name="index" options={{ title: '' }} />
+                            <Stack.Screen name="(trip)" options={{ headerShown: false }} />
+                        </Stack>
+                    </AppErrorBoundary>
+                </ToastProvider>
+            </SafeAreaProvider>
+        </GestureHandlerRootView>
     );
 }
 

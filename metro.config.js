@@ -1,9 +1,9 @@
-const { getDefaultConfig } = require('expo/metro-config');
+// metro.config.js
+const { getSentryExpoConfig } = require('@sentry/react-native/metro');
 
-const config = getDefaultConfig(__dirname);
+const config = getSentryExpoConfig(__dirname);
 
 // Force Hermes-compatible transform profile on all files including node_modules.
-// This converts dynamic import() calls that Hermes cannot handle at runtime.
 config.transformer = {
     ...config.transformer,
     unstable_transformProfile: 'hermes-stable',
