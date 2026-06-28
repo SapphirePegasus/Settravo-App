@@ -22,6 +22,24 @@ import {
     type JoinTripInput,
 } from '../validation/schemas';
 import { mapMember } from './memberService';
+import type { FunctionsHttpError } from '@supabase/supabase-js';
+
+async function extractFunctionError(error: unknown): Promise<string> {
+    try {
+        // FunctionsHttpError is the Supabase SDK type for non-2xx Edge Function responses.
+        // It has a .context.response property which is a standard Response object.
+        const httpError = error as FunctionsHttpError;
+        if (httpError?.context?.response) {
+            const body = await httpError.context.response.json() as { error?: string };
+            if (typeof body?.error === 'string' && body.error.length > 0) {
+                return body.error;
+            }
+        }
+    } catch {
+        // Body is not JSON or has already been consumed — fall through to generic message
+    }
+    return error instanceof Error ? error.message : 'Unknown error';
+}
 
 type TripRow = Database['public']['Tables']['TravelAppTrips']['Row'];
 type MemberRow = Database['public']['Tables']['TravelAppMembers']['Row'];
@@ -85,10 +103,44 @@ function generateUUID(): string {
  * which atomically inserts the trip + the creator as first member.
  */
 export async function createTrip(input: CreateTripInput, creatorDisplayName: string): Promise<Trip> {
+
     const validated = CreateTripSchema.parse(input);
-    // join_code and join_code_expires_at are generated server-side in the
-    // Edge Function — never on the client. A tampered client cannot inject
-    // an arbitrary code or a far-future expiry.
+
+    // ── DIAGNOSTIC PROBE — remove after fix ──────────────────────────────────
+    /*try {
+        const { data: { session } } = await supabase.auth.getSession();
+        const probeUrl = `${process.env.EXPO_PUBLIC_SUPABASE_URL}/functions/v1/trip-action`;
+
+        console.log('[createTrip:probe] URL:', probeUrl);
+        console.log('[createTrip:probe] session uid:', session?.user.id ?? 'NO SESSION');
+        console.log('[createTrip:probe] JWT present:', Boolean(session?.access_token));
+
+        const probeRes = await fetch(probeUrl, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${session?.access_token ?? ''}`,
+                'apikey': process.env.EXPO_PUBLIC_SUPABASE_PUBLISHABLE_KEY ?? '',
+            },
+            body: JSON.stringify({
+                action: 'create',
+                payload: {
+                    name:                 validated.name,
+                    destination:          validated.destination ?? null,
+                    start_date:           validated.startDate ?? null,
+                    end_date:             validated.endDate ?? null,
+                    creator_display_name: creatorDisplayName,
+                },
+            }),
+        });
+
+        const probeBody = await probeRes.text();
+        console.log('[createTrip:probe] status:', probeRes.status);
+        console.log('[createTrip:probe] body:', probeBody);
+    } catch (probeErr) {
+        console.error('[createTrip:probe] fetch threw:', probeErr);
+    }*/
+    // ── END DIAGNOSTIC PROBE ─────────────────────────────────────────────────
 
     const { data, error } = await supabase.functions.invoke<{ trip: TripRow }>('trip-action', {
         body: {
@@ -103,8 +155,14 @@ export async function createTrip(input: CreateTripInput, creatorDisplayName: str
         },
     });
 
-    if (error) throw new Error(`[tripService] createTrip failed: ${error.message}`);
-    if (!data?.trip) throw new Error('[tripService] createTrip: no trip data returned');
+    if (error) {
+        const message = await extractFunctionError(error);
+        throw new AppError('SERVER', `[tripService] createTrip: ${message}`);
+    }
+    if (!data?.trip) {
+        throw new AppError('SERVER', '[tripService] createTrip: no trip data returned');
+    }
+
     return mapTrip(data.trip);
 }
 
@@ -125,8 +183,15 @@ export async function joinTrip(input: JoinTripInput): Promise<Trip> {
         },
     });
 
-    if (error) throw new Error(error.message ?? '[tripService] joinTrip failed');
-    if (!data?.trip) throw new Error('[tripService] joinTrip: no trip data returned');
+    if (error) {
+        const message = await extractFunctionError(error);
+        // 404 = invalid/expired code; 410 = explicitly expired
+        throw new AppError('NOT_FOUND', `[tripService] joinTrip: ${message}`);
+    }
+    if (!data?.trip) {
+        throw new AppError('SERVER', '[tripService] joinTrip: no trip data returned');
+    }
+
     return mapTrip(data.trip);
 }
 
