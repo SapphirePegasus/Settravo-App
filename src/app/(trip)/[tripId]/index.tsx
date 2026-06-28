@@ -59,6 +59,8 @@ import { useTripStore } from '../../../stores/tripStore';
 import type { Trip } from '../../../types/domain';
 import { formatRupees } from '../../../utils/money';
 import { calculateSettlements } from '../../../utils/settlement';
+import { ExpenseDateSection } from '../../../components/trip/ExpenseDateSection';
+import { TripSummaryCard } from '../../../components/trip/TripSummaryCard';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -100,6 +102,31 @@ function buildShareText(
     lines.push('_(Shared via Settravo)_');
 
     return lines.join('\n');
+}
+
+/**
+ * Groups expenses into date-keyed sections for the SectionList.
+ * Each section key is an ISO date string (YYYY-MM-DD) from createdAt.
+ * Expenses within each section are newest-first.
+ */
+function groupExpensesByDate(
+    expenses: import('../../../types/domain').Expense[],
+): { dateKey: string; data: string[] }[] {
+    const map = new Map<string, string[]>();
+
+    // Sort newest first overall
+    const sorted = [...expenses].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+    );
+
+    for (const expense of sorted) {
+        const dateKey = expense.createdAt.slice(0, 10); // YYYY-MM-DD
+        const group = map.get(dateKey) ?? [];
+        group.push(expense.id);
+        map.set(dateKey, group);
+    }
+
+    return Array.from(map.entries()).map(([dateKey, data]) => ({ dateKey, data }));
 }
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
@@ -161,10 +188,19 @@ export default function TripDetailScreen() {
 
     const allSettled = expenses.length > 0 && settlements.length === 0;
 
+    type SectionData =
+        | { title: 'members'; data: ['members'] }
+        | { title: 'summary'; data: ['summary'] }
+        | { title: string; data: string[]; dateKey: string }; // date group
+
     const sections: SectionData[] = useMemo(() => [
         { title: 'members', data: ['members'] as ['members'] },
         { title: 'summary', data: ['summary'] as ['summary'] },
-        { title: 'expenses', data: expenses.map((e) => e.id) },
+        ...groupExpensesByDate(expenses).map((g) => ({
+            title: g.dateKey,
+            data: g.data,
+            dateKey: g.dateKey,
+        })),
     ], [expenses]);
 
     // ── Trip load ─────────────────────────────────────────────────────────────
@@ -363,37 +399,13 @@ export default function TripDetailScreen() {
 
         // Settlement summary section
         if (section.title === 'summary') {
-            if (allSettled) {
-                return (
-                    <View style={[styles.card, { backgroundColor: colors.card }]}>
-                        <Text style={[styles.allSettledText, { color: colors.accentSuccess }]}>
-                            All Settled! 🎉
-                        </Text>
-                    </View>
-                );
-            }
-            if (settlements.length === 0) return null;
-
-            const preview = settlements.slice(0, 2);
             return (
-                <View style={[styles.card, { backgroundColor: colors.card }]}>
-                    <Text style={[styles.cardTitle, { color: colors.text }]}>Settlements</Text>
-                    {preview.map((s, i) => (
-                        <Text key={i} style={[styles.settlementLine, { color: colors.subText }]}>
-                            {s.fromMemberName} → {s.toMemberName}: {formatRupees(s.amountMoney)}
-                        </Text>
-                    ))}
-                    <Pressable
-                        onPress={() => router.push(`/(trip)/${tripId}/settle`)}
-                        hitSlop={8}
-                    >
-                        <Text style={[styles.cardAction, { color: colors.accent, marginTop: 8 }]}>
-                            {settlements.length > 2
-                                ? `See all ${settlements.length} →`
-                                : 'Full settle plan →'}
-                        </Text>
-                    </Pressable>
-                </View>
+                <TripSummaryCard
+                    expenses={expenses}
+                    settlements={settlements}
+                    allSettled={allSettled}
+                    onSettlePress={() => router.push(`/(trip)/${tripId}/settle`)}
+                />
             );
         }
 
@@ -423,16 +435,11 @@ export default function TripDetailScreen() {
 
     const renderSectionHeader = useCallback(
         ({ section }: { section: SectionData }) => {
-            if (section.title !== 'expenses' || expenses.length === 0) return null;
-            return (
-                <View style={styles.expensesHeader}>
-                    <Text style={[styles.sectionLabel, { color: colors.subText }]}>
-                        Expenses ({expenses.length})
-                    </Text>
-                </View>
-            );
+            if (section.title === 'members' || section.title === 'summary') return null;
+            // date group header
+            return <ExpenseDateSection dateKey={(section as { dateKey: string }).dateKey} />;
         },
-        [expenses.length, colors.subText],
+        [],
     );
 
     const ListEmptyComponent = useMemo(() => {

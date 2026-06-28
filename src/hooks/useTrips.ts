@@ -1,16 +1,12 @@
 /**
  * useTrips.ts
  *
- * Hook that manages the full trip loading lifecycle:
- *  1. On mount: load joined trip IDs from AsyncStorage (instant, no network)
- *  2. Fetch full trip objects from Supabase for those IDs
- *  3. Update tripStore with the results
- *  4. Expose loading state and a refresh function
- *
- * This hook is used by the Home screen only. Trip detail screens use
- * selectActiveTrip() from the store directly (data is already fetched).
+ * Hook that manages the full trip loading lifecycle.
+ * Phase 4 addition: exposes `fetchError` so the Home screen can surface
+ * a toast when an online fetch fails instead of swallowing it silently.
  */
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useState } from 'react';
+import { AppError } from '../errors/AppError';
 import { fetchMyTrips } from '../services/tripService';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useTripStore } from '../stores/tripStore';
@@ -26,30 +22,34 @@ export function useTrips() {
     const hasFetched = useTripStore((s) => s.hasFetched);
     const networkOnline = useConnectionStore((s) => s.networkOnline);
 
+    const [fetchError, setFetchError] = useState<AppError | null>(null);
+
     const fetchTrips = useCallback(async () => {
         if (!networkOnline) {
-            // Serve from store (already loaded from AsyncStorage)
             setLoading(false);
             return;
         }
         setLoading(true);
+        setFetchError(null);
         try {
             const fetched = await fetchMyTrips();
             setTrips(fetched);
             setHasFetched(true);
         } catch (err) {
-            console.error('[useTrips] fetch failed:', err);
-            // Don't clear existing trips on failure — stale data > empty list
+            const appErr =
+                err instanceof AppError
+                    ? err
+                    : new AppError('UNKNOWN', err instanceof Error ? err.message : 'Unknown error');
+            setFetchError(appErr);
+            // Do NOT clear trips on failure — stale data is better than empty list
         } finally {
             setLoading(false);
         }
     }, [setLoading, setTrips, setHasFetched, networkOnline]);
 
     useEffect(() => {
-        Promise.all([loadJoinedIds(), loadOfflineQueue()]).then(() => {
-            fetchTrips();
-        });
+        Promise.all([loadJoinedIds(), loadOfflineQueue()]).then(() => fetchTrips());
     }, [loadJoinedIds, loadOfflineQueue, fetchTrips]);
 
-    return { trips, isLoading, hasFetched, refresh: fetchTrips };
+    return { trips, isLoading, hasFetched, fetchError, refresh: fetchTrips };
 }

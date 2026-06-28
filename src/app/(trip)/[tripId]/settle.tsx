@@ -1,387 +1,309 @@
 /**
- * app/(trip)/[tripId]/settle.tsx — Settle Up screen (Phase 5)
+ * settle.tsx
  *
- * Fix v2:
- *  - handleMarkPaid / handleUnmark now call setSplitSettled() for an
- *    immediate optimistic update before the network round-trip completes.
- *    Previously the UI waited for the realtime UPDATE event, which could
- *    take 1–3 s on a slow connection, making the button appear broken.
- *  - On network error the optimistic update is rolled back.
+ * Settle Up screen.
+ *
+ * Phase 4 changes:
+ *  4.4  Avatar cards per settlement (from/to member display)
+ *  4.4  "All settled" celebration state
+ *  4.9  Haptic feedback on mark/unmark settled
+ *  2.3  useThemeColors() — no inline light/dark
+ *  2.4  useToast() — no Alert.alert
  */
 
-import { useLocalSearchParams } from 'expo-router';
+import * as Haptics from 'expo-haptics';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
 import {
     ActivityIndicator,
-    Alert,
-    FlatList,
     Pressable,
-    Share,
+    ScrollView,
     StyleSheet,
     Text,
-    useColorScheme,
     View,
 } from 'react-native';
-import { ConnectionBanner } from '../../../components/ConnectionBanner';
+import { ConfirmModal } from '../../../components/modals/ConfirmModal';
+import { MemberAvatar } from '../../../components/MemberAvatar';
+import { useToast } from '../../../components/Toast';
+import { useThemeColors } from '../../../hooks/useThemeColors';
 import { useMembers } from '../../../hooks/useMembers';
 import {
     markSettledBetweenMembers,
     unmarkSettledBetweenMembers,
 } from '../../../services/expenseService';
-import { buildGuestUrl } from '../../../services/memberService';
 import { useExpenseStore } from '../../../stores/expenseStore';
-import type { Settlement } from '../../../types/domain';
-import { formatRupees } from '../../../utils/money';
 import { calculateSettlements } from '../../../utils/settlement';
-import { useThemeColors } from '../../../hooks/useThemeColors';
+import { formatRupees } from '../../../utils/money';
+import { useColorScheme } from 'react-native';
 
 export default function SettleScreen() {
-    const { tripId } = useLocalSearchParams<{ tripId: string }>();
-    const colors = useThemeColors();
+    const { tripId }     = useLocalSearchParams<{ tripId: string }>();
+    const router         = useRouter();
+    const colors         = useThemeColors();
+    const { showToast }  = useToast();
+    const isDark         = useColorScheme() === 'dark'; // for MemberAvatar only
 
+    const splits   = useExpenseStore((s) => s.splits);
+    const expenses = useExpenseStore(
+        (s) => (tripId ? (s.expenses[tripId] ?? []) : []),
+    );
     const members = useMembers(tripId ?? '');
 
-    const expenses = useExpenseStore((s) => s.expenses[tripId ?? ''] ?? []);
-    const splits = useExpenseStore((s) => s.splits);
-    const setSplitSettled = useExpenseStore((s) => s.setSplitSettled);
-
-    const allSplits = useMemo(() => Object.values(splits).flat(), [splits]);
-
-    const settlements = useMemo(() => {
-        // Don't compute until members are available — prevents UUID-as-name flash
-        if (members.length === 0) return [];
-        return calculateSettlements(expenses, allSplits, members);
-    }, [expenses, allSplits, members]);
-
-    const totalOwed = useMemo(
-        () => settlements.reduce((sum, s) => sum + s.amountMoney, 0),
-        [settlements],
+    const allSplits   = useMemo(() => Object.values(splits).flat(), [splits]);
+    const settlements = useMemo(
+        () => calculateSettlements(expenses, allSplits, members),
+        [expenses, allSplits, members],
     );
+    const allSettled = expenses.length > 0 && settlements.length === 0;
 
-    const settledMap = useMemo<Record<string, boolean>>(() => {
-        if (!tripId) return {};
-        const map: Record<string, boolean> = {};
-        for (const s of settlements) {
-            const creditorExpenseIds = expenses
-                .filter((e) => e.tripId === tripId && e.paidByMember === s.toMemberId)
-                .map((e) => e.id);
+    const [loadingId, setLoadingId]       = useState<string | null>(null);
+    const [confirmData, setConfirmData]   = useState<{
+        debtorId: string; creditorId: string; amount: number;
+        debtorName: string; creditorName: string;
+    } | null>(null);
+    const [unmarkData, setUnmarkData]     = useState<{
+        debtorId: string; creditorId: string;
+    } | null>(null);
 
-            if (creditorExpenseIds.length === 0) {
-                map[`${s.fromMemberId}:${s.toMemberId}`] = false;
-                continue;
-            }
-
-            const relevantSplits = creditorExpenseIds.flatMap((expenseId) =>
-                (splits[expenseId] ?? []).filter((sp) => sp.memberId === s.fromMemberId),
-            );
-
-            map[`${s.fromMemberId}:${s.toMemberId}`] =
-                relevantSplits.length > 0 && relevantSplits.every((sp) => sp.isSettled);
-        }
-        return map;
-    }, [settlements, expenses, splits, tripId]);
-
-    const [markingPaid, setMarkingPaid] = useState<Record<string, boolean>>({});
-
-    const settlementKey = (s: Settlement) => `${s.fromMemberId}:${s.toMemberId}`;
-
-    // Helper: get creditor expense ids for a settlement
-    const getCreditorExpenseIds = useCallback(
-        (toMemberId: string) =>
-            expenses
-                .filter((e) => e.tripId === (tripId ?? '') && e.paidByMember === toMemberId)
-                .map((e) => e.id),
-        [expenses, tripId],
-    );
-
-    // Replace the handleMarkPaid callback in settle.tsx:
-    const handleMarkPaid = useCallback(
-        async (settlement: Settlement) => {
-            if (!tripId) return;
-            const key = settlementKey(settlement);
-            const creditorExpenseIds = getCreditorExpenseIds(settlement.toMemberId);
-
-            if (creditorExpenseIds.length === 0) {
-                // No expenses to settle — this settlement entry is stale
-                Alert.alert('Nothing to settle', 'No expenses found for this creditor. Try refreshing.');
-                return;
-            }
-
-            setMarkingPaid((p) => ({ ...p, [key]: true }));
-            setSplitSettled(creditorExpenseIds, settlement.fromMemberId, true);
-
-            try {
-                await markSettledBetweenMembers(tripId, settlement.fromMemberId, settlement.toMemberId);
-            } catch (err) {
-                setSplitSettled(creditorExpenseIds, settlement.fromMemberId, false);
-                Alert.alert('Error', err instanceof Error ? err.message : 'Could not mark as paid.');
-            } finally {
-                setMarkingPaid((p) => ({ ...p, [key]: false }));
-            }
-        },
-        [tripId, getCreditorExpenseIds, setSplitSettled],
-    );
-
-    const handleUnmark = useCallback(
-        async (settlement: Settlement) => {
-            if (!tripId) return;
-            const key = settlementKey(settlement);
-            Alert.alert(
-                'Reopen settlement?',
-                `Mark the payment from ${settlement.fromMemberName} to ${settlement.toMemberName} as unpaid again?`,
-                [
-                    { text: 'Cancel', style: 'cancel' },
-                    {
-                        text: 'Reopen',
-                        style: 'destructive',
-                        onPress: async () => {
-                            setMarkingPaid((p) => ({ ...p, [key]: true }));
-
-                            // Optimistic update
-                            const creditorExpenseIds = getCreditorExpenseIds(settlement.toMemberId);
-                            setSplitSettled(creditorExpenseIds, settlement.fromMemberId, false);
-
-                            try {
-                                await unmarkSettledBetweenMembers(
-                                    tripId,
-                                    settlement.fromMemberId,
-                                    settlement.toMemberId,
-                                );
-                            } catch (err) {
-                                // Rollback
-                                setSplitSettled(creditorExpenseIds, settlement.fromMemberId, true);
-                                Alert.alert('Error', err instanceof Error ? err.message : 'Could not reopen.');
-                            } finally {
-                                setMarkingPaid((p) => ({ ...p, [key]: false }));
-                            }
-                        },
-                    },
-                ],
-            );
-        },
-        [tripId, getCreditorExpenseIds, setSplitSettled],
-    );
-
-    const handleShareText = useCallback(async (s: Settlement) => {
-        await Share.share({
-            message: `${s.fromMemberName} owes ${s.toMemberName} ${formatRupees(s.amountMoney)} on Settravo`,
-        });
-    }, []);
-
-    const handleShareGuestLink = useCallback(
-        async (s: Settlement) => {
-            const debtorMember = members.find((m) => m.id === s.fromMemberId);
-            if (!debtorMember) return;
-            const url = buildGuestUrl(debtorMember);
-            if (!url) {
-                Alert.alert('App user', `${s.fromMemberName} already has the app.`);
-                return;
-            }
-            await Share.share({
-                message: `Hi ${s.fromMemberName}! Your balance:\n${url}`,
-                url,
+    const handleMarkSettled = useCallback(async () => {
+        if (!confirmData || !tripId) return;
+        const { debtorId, creditorId } = confirmData;
+        const key = `${debtorId}-${creditorId}`;
+        setLoadingId(key);
+        try {
+            await markSettledBetweenMembers(tripId, debtorId, creditorId);
+            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            showToast({ message: 'Marked as settled ✓', variant: 'success' });
+        } catch (err) {
+            showToast({
+                message: err instanceof Error ? err.message : 'Could not mark settled.',
+                variant: 'error',
             });
-        },
-        [members],
-    );
+        } finally {
+            setLoadingId(null);
+            setConfirmData(null);
+        }
+    }, [confirmData, tripId, showToast]);
 
-    // Add after the existing state/memo declarations and before the empty-state return:
-    if (expenses.length > 0 && members.length === 0) {
+    const handleUnmark = useCallback(async () => {
+        if (!unmarkData || !tripId) return;
+        const { debtorId, creditorId } = unmarkData;
+        const key = `${debtorId}-${creditorId}`;
+        setLoadingId(key);
+        try {
+            await unmarkSettledBetweenMembers(tripId, debtorId, creditorId);
+            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
+            showToast({ message: 'Settlement reopened', variant: 'info' });
+        } catch (err) {
+            showToast({
+                message: err instanceof Error ? err.message : 'Could not reopen.',
+                variant: 'error',
+            });
+        } finally {
+            setLoadingId(null);
+            setUnmarkData(null);
+        }
+    }, [unmarkData, tripId, showToast]);
+
+    // ── All settled ───────────────────────────────────────────────────────────
+    if (allSettled) {
         return (
-            <View style={[styles.centered, { backgroundColor: colors.bg }]}>
-                <ActivityIndicator color={colors.text} />
+            <View style={[styles.root, { backgroundColor: colors.bg }]}>
+                <View style={styles.celebrationContainer}>
+                    <Text style={styles.celebrationEmoji}>🎉</Text>
+                    <Text style={[styles.celebrationTitle, { color: colors.text }]}>
+                        All Settled!
+                    </Text>
+                    <Text style={[styles.celebrationSub, { color: colors.subText }]}>
+                        Everyone's square. Time for the next adventure.
+                    </Text>
+                    <Pressable
+                        style={[styles.doneButton, { backgroundColor: colors.accent }]}
+                        onPress={() => router.back()}
+                    >
+                        <Text style={styles.doneButtonText}>Done</Text>
+                    </Pressable>
+                </View>
             </View>
         );
     }
 
+    // ── No expenses ───────────────────────────────────────────────────────────
     if (expenses.length === 0) {
         return (
-            <View style={[styles.centered, { backgroundColor: colors.bg }]}>
-                <Text style={styles.emptyIcon}>🧾</Text>
-                <Text style={[styles.emptyTitle, { color: colors.text }]}>No expenses yet</Text>
-                <Text style={[styles.emptySub, { color: colors.subText }]}>
-                    Add expenses first, then come back to settle up.
-                </Text>
+            <View style={[styles.root, { backgroundColor: colors.bg }]}>
+                <View style={styles.celebrationContainer}>
+                    <Text style={styles.celebrationEmoji}>💳</Text>
+                    <Text style={[styles.celebrationTitle, { color: colors.text }]}>
+                        No expenses yet
+                    </Text>
+                    <Text style={[styles.celebrationSub, { color: colors.subText }]}>
+                        Add expenses to see who owes what.
+                    </Text>
+                </View>
             </View>
         );
     }
 
-    if (settlements.length === 0) {
-        return (
-            <View style={[styles.centered, { backgroundColor: colors.bg }]}>
-                <Text style={styles.emptyIcon}>🎉</Text>
-                <Text style={[styles.emptyTitle, { color: colors.text }]}>All settled!</Text>
-                <Text style={[styles.emptySub, { color: colors.subText }]}>
-                    Everyone has paid their fair share. Nothing left to transfer.
-                </Text>
-            </View>
-        );
-    }
-
+    // ── Settlement list ───────────────────────────────────────────────────────
     return (
         <View style={[styles.root, { backgroundColor: colors.bg }]}>
-            <ConnectionBanner />
-
-            <FlatList
-                data={settlements}
-                keyExtractor={(_, i) => String(i)}
-                contentContainerStyle={styles.list}
+            <ScrollView
+                contentContainerStyle={styles.content}
                 showsVerticalScrollIndicator={false}
-                ListHeaderComponent={
-                    <View style={styles.header}>
-                        <Text style={[styles.headerSub, { color: colors.subText }]}>
-                            Minimum transfers to clear all debts
-                        </Text>
-                        <View style={styles.totalRow}>
-                            <Text style={[styles.totalLabel, { color: colors.subText }]}>Total to transfer</Text>
-                            <Text style={[styles.totalAmount, { color: colors.text }]}>
-                                {formatRupees(totalOwed)}
-                            </Text>
-                        </View>
-                    </View>
-                }
-                renderItem={({ item: s, index }) => {
-                    const key = settlementKey(s);
-                    const isMarking = markingPaid[key] ?? false;
-                    const debtorMember = members.find((m) => m.id === s.fromMemberId);
-                    const isGuest = debtorMember?.isGuest ?? false;
-                    const isAlreadySettled = settledMap[key] ?? false;
+            >
+                <Text style={[styles.pageTitle, { color: colors.subText }]}>
+                    {settlements.length} settlement{settlements.length !== 1 ? 's' : ''} remaining
+                </Text>
+
+                {settlements.map((s) => {
+                    const fromMember = members.find((m) => m.id === s.fromMemberId);
+                    const toMember   = members.find((m) => m.id === s.toMemberId);
+                    const key        = `${s.fromMemberId}-${s.toMemberId}`;
+                    const isLoading  = loadingId === key;
 
                     return (
-                        <View
-                            style={[
-                                styles.card,
-                                {
-                                    backgroundColor: colors.card,
-                                    opacity: isAlreadySettled ? 0.6 : 1,
-                                },
-                            ]}
-                        >
-                            <View style={[styles.badge, { backgroundColor: isAlreadySettled ? colors.settled : colors.accent }]}>
-                                <Text style={styles.badgeText}>{isAlreadySettled ? '✓' : index + 1}</Text>
+                        <View key={key} style={[styles.settlementCard, { backgroundColor: colors.card }]}>
+                            {/* From member */}
+                            <View style={styles.memberCol}>
+                                {fromMember && (
+                                    <MemberAvatar
+                                        member={fromMember}
+                                        isDark={isDark}
+                                        size={48}
+                                        allMembers={members}
+                                    />
+                                )}
+                                <Text style={[styles.memberName, { color: colors.text }]} numberOfLines={1}>
+                                    {s.fromMemberName}
+                                </Text>
+                                <Text style={[styles.memberRole, { color: colors.subText }]}>owes</Text>
                             </View>
 
-                            <View style={styles.transferRow}>
-                                <View style={styles.names}>
-                                    <Text style={[styles.fromName, { color: colors.text }]}>
-                                        {s.fromMemberName}
-                                    </Text>
-                                    <Text style={[styles.arrow, { color: colors.subText }]}>→</Text>
-                                    <Text style={[styles.toName, { color: isAlreadySettled ? colors.settled : colors.accent }]}>
-                                        {s.toMemberName}
-                                    </Text>
-                                </View>
-                                <Text
-                                    style={[
-                                        styles.amount,
-                                        {
-                                            color: colors.text,
-                                            textDecorationLine: isAlreadySettled ? 'line-through' : 'none',
-                                        },
-                                    ]}
-                                >
+                            {/* Amount + arrow */}
+                            <View style={styles.amountCol}>
+                                <Text style={[styles.arrow, { color: colors.separator }]}>→</Text>
+                                <Text style={[styles.amount, { color: colors.text }]}>
                                     {formatRupees(s.amountMoney)}
                                 </Text>
                             </View>
 
-                            {isAlreadySettled && (
-                                <Text style={[styles.settledLabel, { color: colors.settled }]}>
-                                    ✓ Paid outside the app
-                                </Text>
-                            )}
-
-                            <View style={styles.actions}>
-                                <Pressable
-                                    style={[
-                                        styles.actionBtn,
-                                        isAlreadySettled
-                                            ? { borderColor: colors.border }
-                                            : { backgroundColor: colors.settled },
-                                        { opacity: isMarking ? 0.6 : 1 },
-                                    ]}
-                                    onPress={() =>
-                                        isAlreadySettled ? handleUnmark(s) : handleMarkPaid(s)
-                                    }
-                                    disabled={isMarking}
-                                >
-                                    {isMarking ? (
-                                        <ActivityIndicator
-                                            size="small"
-                                            color={isAlreadySettled ? colors.subText : '#fff'}
-                                        />
-                                    ) : (
-                                        <Text
-                                            style={[
-                                                styles.actionBtnText,
-                                                { color: isAlreadySettled ? colors.subText : '#fff' },
-                                            ]}
-                                        >
-                                            {isAlreadySettled ? 'Reopen' : 'Mark as paid'}
-                                        </Text>
-                                    )}
-                                </Pressable>
-
-                                <Pressable
-                                    style={[styles.actionBtn, { borderColor: colors.border }]}
-                                    onPress={() => handleShareText(s)}
-                                >
-                                    <Text style={[styles.actionBtnText, { color: colors.subText }]}>Share</Text>
-                                </Pressable>
-
-                                {isGuest && (
-                                    <Pressable
-                                        style={[styles.actionBtn, { backgroundColor: colors.accent }]}
-                                        onPress={() => handleShareGuestLink(s)}
-                                    >
-                                        <Text style={[styles.actionBtnText, { color: '#fff' }]}>
-                                            Send link
-                                        </Text>
-                                    </Pressable>
+                            {/* To member */}
+                            <View style={styles.memberCol}>
+                                {toMember && (
+                                    <MemberAvatar
+                                        member={toMember}
+                                        isDark={isDark}
+                                        size={48}
+                                        allMembers={members}
+                                    />
                                 )}
+                                <Text style={[styles.memberName, { color: colors.text }]} numberOfLines={1}>
+                                    {s.toMemberName}
+                                </Text>
+                                <Text style={[styles.memberRole, { color: colors.subText }]}>receives</Text>
                             </View>
+
+                            {/* Mark settled button */}
+                            <Pressable
+                                style={[styles.markButton, { backgroundColor: colors.accentSuccess }]}
+                                onPress={() => setConfirmData({
+                                    debtorId:    s.fromMemberId,
+                                    creditorId:  s.toMemberId,
+                                    amount:      s.amountMoney,
+                                    debtorName:  s.fromMemberName,
+                                    creditorName: s.toMemberName,
+                                })}
+                                disabled={isLoading}
+                                accessibilityRole="button"
+                                accessibilityLabel={`Mark ${s.fromMemberName}'s payment to ${s.toMemberName} as settled`}
+                            >
+                                {isLoading ? (
+                                    <ActivityIndicator color="#fff" size="small" />
+                                ) : (
+                                    <Text style={styles.markButtonText}>Mark Settled</Text>
+                                )}
+                            </Pressable>
                         </View>
                     );
-                }}
-                ItemSeparatorComponent={() => <View style={{ height: 12 }} />}
+                })}
+            </ScrollView>
+
+            {/* Mark settled confirmation */}
+            <ConfirmModal
+                visible={confirmData !== null}
+                title="Mark as settled?"
+                message={
+                    confirmData
+                        ? `${confirmData.debtorName} paid ${formatRupees(confirmData.amount)} to ${confirmData.creditorName}?`
+                        : ''
+                }
+                confirmLabel="Yes, Settled"
+                confirmVariant="primary"
+                onConfirm={handleMarkSettled}
+                onCancel={() => setConfirmData(null)}
+            />
+
+            {/* Unmark confirmation */}
+            <ConfirmModal
+                visible={unmarkData !== null}
+                title="Reopen settlement?"
+                message="This will unmark the settlement and include it in the outstanding balance again."
+                confirmLabel="Reopen"
+                confirmVariant="destructive"
+                onConfirm={handleUnmark}
+                onCancel={() => setUnmarkData(null)}
             />
         </View>
     );
 }
 
 const styles = StyleSheet.create({
-    root: { flex: 1 },
-    centered: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 32 },
-    emptyIcon: { fontSize: 56, marginBottom: 16 },
-    emptyTitle: { fontSize: 24, fontWeight: '700', marginBottom: 8 },
-    emptySub: { fontSize: 16, textAlign: 'center', lineHeight: 24 },
-    list: { padding: 16, paddingBottom: 48 },
-    header: { marginBottom: 20 },
-    headerSub: { fontSize: 13, marginBottom: 8 },
-    totalRow: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'baseline' },
-    totalLabel: { fontSize: 15 },
-    totalAmount: { fontSize: 28, fontWeight: '700' },
-    card: { borderRadius: 18, padding: 16, position: 'relative' },
-    badge: {
-        position: 'absolute', top: -8, left: 16,
-        width: 24, height: 24, borderRadius: 12,
+    root:    { flex: 1 },
+    content: { padding: 16, gap: 12, paddingBottom: 40 },
+
+    pageTitle: { fontSize: 13, fontWeight: '500', marginBottom: 4 },
+
+    settlementCard: {
+        borderRadius: 16,
+        padding: 16,
+        gap: 12,
+        alignItems: 'center',
+    },
+    memberCol:  {
+        alignItems: 'center',
+        gap: 4,
+        flex: 1,
+        minWidth: 0,
+    },
+    memberName: { fontSize: 13, fontWeight: '500', textAlign: 'center' },
+    memberRole: { fontSize: 11 },
+
+    amountCol:  { alignItems: 'center', gap: 2 },
+    arrow:      { fontSize: 18 },
+    amount:     { fontSize: 20, fontWeight: '700' },
+
+    markButton: {
+        width: '100%',
+        height: 44,
+        borderRadius: 12,
+        alignItems: 'center',
+        justifyContent: 'center',
+        marginTop: 4,
+    },
+    markButtonText: { color: '#fff', fontSize: 15, fontWeight: '600' },
+
+    // Celebration
+    celebrationContainer: {
+        flex: 1, alignItems: 'center', justifyContent: 'center',
+        paddingHorizontal: 32, paddingBottom: 60,
+    },
+    celebrationEmoji: { fontSize: 72, marginBottom: 20 },
+    celebrationTitle: { fontSize: 28, fontWeight: '700', marginBottom: 10 },
+    celebrationSub:   { fontSize: 16, textAlign: 'center', lineHeight: 24, marginBottom: 40 },
+    doneButton: {
+        width: '100%', height: 52, borderRadius: 14,
         alignItems: 'center', justifyContent: 'center',
     },
-    badgeText: { color: '#fff', fontSize: 12, fontWeight: '700' },
-    transferRow: {
-        flexDirection: 'row', alignItems: 'center',
-        justifyContent: 'space-between', marginTop: 8, marginBottom: 12,
-    },
-    names: { flexDirection: 'row', alignItems: 'center', gap: 8, flex: 1 },
-    fromName: { fontSize: 17, fontWeight: '600' },
-    arrow: { fontSize: 18 },
-    toName: { fontSize: 17, fontWeight: '600' },
-    amount: { fontSize: 20, fontWeight: '700' },
-    settledLabel: { fontSize: 13, fontWeight: '500', marginBottom: 10 },
-    actions: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-    actionBtn: {
-        borderWidth: 1, borderRadius: 10,
-        paddingVertical: 8, paddingHorizontal: 14,
-        minWidth: 80, alignItems: 'center', justifyContent: 'center',
-    },
-    actionBtnText: { fontSize: 13, fontWeight: '600' },
+    doneButtonText: { color: '#fff', fontSize: 16, fontWeight: '600' },
 });

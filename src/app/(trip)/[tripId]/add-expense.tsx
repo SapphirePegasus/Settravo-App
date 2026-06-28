@@ -515,6 +515,26 @@ export default function AddExpenseScreen() {
                         </View>
                     </View>
 
+                    {/* Split progress bar */}
+                    {amountPaise != null && amountPaise > 0 && (
+                        <View style={[styles.progressBarBg, { backgroundColor: colors.bg }]}>
+                            <View
+                                style={[
+                                    styles.progressBarFill,
+                                    {
+                                        backgroundColor:
+                                            splitTotal === amountPaise
+                                                ? colors.accentSuccess
+                                                : splitTotal > amountPaise
+                                                    ? colors.accentDestructive
+                                                    : colors.accent,
+                                        width: `${Math.min((splitTotal / amountPaise) * 100, 100)}%`,
+                                    },
+                                ]}
+                            />
+                        </View>
+                    )}
+
                     {/* Split rows */}
                     <View style={[styles.splitCard, { backgroundColor: colors.card }]}>
                         {members.map((m) => (
@@ -701,4 +721,14 @@ const styles = StyleSheet.create({
         alignItems: 'center', justifyContent: 'center',
     },
     submitText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+    progressBarBg: {
+        height: 4,
+        borderRadius: 2,
+        marginBottom: 12,
+        overflow: 'hidden',
+    },
+    progressBarFill: {
+        height: 4,
+        borderRadius: 2,
+    },
 });
