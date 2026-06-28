@@ -26,6 +26,14 @@
     },
     "plugins": [
       [
+        "@sentry/react-native/expo",
+        {
+          "url": "https: //sentry.io/",
+          "organization": "sapphirepegasus",
+          "project": "settravo-app"
+        }
+      ],
+      [
         "expo-camera",
         {
           "cameraPermission": "Allow Settravo to access your camera to scan join QR codes.",
@@ -44,8 +52,7 @@
         }
       ],
       "expo-secure-store",
-      "expo-sqlite",
-      "@sentry/react-native"
+      "expo-sqlite"
     ],
     "experiments": {
       "typedRoutes": true,
