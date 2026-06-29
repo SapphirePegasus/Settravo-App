@@ -1,25 +1,72 @@
 /**
- * src/app/(trip)/[tripId]/_layout.tsx
+ * app/(trip)/[tripId]/_layout.tsx
  *
- * Stack layout for the individual trip's screens.
- * The trip name is set dynamically by the index screen via navigation.setOptions().
+ * Stack layout for an individual trip's screens.
+ * Trip name is set dynamically by index.tsx via navigation.setOptions().
+ *
+ * REFACTOR: removed useColorScheme() + hardcoded hex strings.
+ * All header colors from useThemeColors().
  */
+
 import { Stack } from 'expo-router';
-import { useColorScheme } from 'react-native';
+import { useThemeColors } from '@/hooks/useThemeColors';
 
 export default function TripIdLayout() {
-    const isDark = useColorScheme() === 'dark';
+    const colors = useThemeColors();
+
+    const headerStyle = {
+        backgroundColor: colors.surface,
+    } as const;
+
     return (
-        <Stack screenOptions={{
-            headerStyle: { backgroundColor: isDark ? '#1c1c1e' : '#f2f2f7' },
-            headerTintColor: isDark ? '#ffffff' : '#000000',
-            headerShadowVisible: false,
-            contentStyle: { backgroundColor: isDark ? '#000000' : '#f2f2f7' },
-        }}>
-            <Stack.Screen name="index" options={{ title: 'Trip', headerBackVisible: false }} />
-            <Stack.Screen name="add-expense" options={{ title: 'Add Expense', presentation: 'modal' }} />
-            <Stack.Screen name="settle" options={{ title: 'Settle Up' }} />
-            <Stack.Screen name="qr" options={{ title: 'Share Trip', presentation: 'modal' }} />
+        <Stack
+            screenOptions={{
+                headerStyle,
+                headerTintColor: colors.text,
+                headerShadowVisible: false,
+                contentStyle: { backgroundColor: colors.bg },
+            }}
+        >
+            <Stack.Screen
+                name="index"
+                options={{
+                    title: 'Trip',
+                    headerBackVisible: false,
+                    headerShown: false,  // trip screen manages its own header
+                }}
+            />
+            <Stack.Screen
+                name="add-expense"
+                options={{
+                    title: 'Add Expense',
+                    presentation: 'modal',
+                    headerShown: false,
+                }}
+            />
+            <Stack.Screen
+                name="settle"
+                options={{
+                    title: 'Settle Up',
+                    headerStyle,
+                    headerTintColor: colors.text,
+                }}
+            />
+            <Stack.Screen
+                name="qr"
+                options={{
+                    title: 'Share Trip',
+                    presentation: 'modal',
+                    headerShown: false,
+                }}
+            />
+            <Stack.Screen
+                name="activity"
+                options={{
+                    title: 'Activity',
+                    headerStyle,
+                    headerTintColor: colors.text,
+                }}
+            />
         </Stack>
     );
 }

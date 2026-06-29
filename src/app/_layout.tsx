@@ -1,140 +1,61 @@
 /**
- * src/app/_layout.tsx
+ * app/_layout.tsx
  *
- * Root layout. Responsibilities:
- *  1. Sentry crash reporting initialised at module load time.
- *  2. Runs initializeIdentity() — must complete before any screen renders.
- *  3. Subscribes to Supabase auth state changes (single subscriber).
- *  4. Subscribes to NetInfo for offline queue trigger.
- *  5. Mounts useOfflineSync() ONCE — never in individual trip screens.
- *  6. Wraps all children in AppErrorBoundary for render-error recovery.
- *  7. Respects system color scheme (light/dark).
+ * Root layout. Single responsibilities:
+ *  1. Sentry initialised at module load (before any component renders).
+ *  2. Wraps the tree: GestureHandler → SafeArea → ToastProvider → AppErrorBoundary → ThemeProvider.
+ *  3. Boots identity (initializeIdentity) and waits for isReady.
+ *  4. Subscribes to auth changes + NetInfo (single subscriber each).
+ *  5. Mounts useOfflineSync() once — never in individual screens.
+ *  6. Auth gate: no user → redirect to (auth)/onboarding.
+ *  7. ThemeProvider is inside the tree so all screens have access.
+ *
+ * Removed from here (Phase B):
+ *  - OnboardingScreen component: moved to app/(auth)/onboarding.tsx
+ *  - useColorScheme() / isDark: all theming now from ThemeProvider
+ *  - Hardcoded hex color strings
  */
 
 import * as Sentry from '@sentry/react-native';
 import NetInfo from '@react-native-community/netinfo';
-import { SplashScreen, Stack } from 'expo-router';
+import { Redirect, SplashScreen, Stack } from 'expo-router';
+import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect } from 'react';
-import { ActivityIndicator, StyleSheet, Text, useColorScheme, View } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { GestureHandlerRootView } from 'react-native-gesture-handler';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
+
 import { AppErrorBoundary } from '../components/AppErrorBoundary';
-import { OnboardingScreen } from '../components/OnboardingScreen';
+import { ToastProvider } from '../components/Toast';
+import { ThemeProvider, useThemeContext } from '@/context/ThemeContext';
 import { useOfflineSync } from '../hooks/useOfflineSync';
 import { subscribeToAuthChanges, useAuthStore } from '../stores/authStore';
 import { useConnectionStore } from '../stores/connectionStore';
-import { ToastProvider } from '../components/Toast';
-import { SafeAreaProvider } from 'react-native-safe-area-context';
-import { GestureHandlerRootView } from 'react-native-gesture-handler';
-import { ThemeProvider, useThemeContext } from '@/context/ThemeContext';
-import { StatusBar } from 'expo-status-bar';
 
-// ─── Sentry initialisation ────────────────────────────────────────────────────
-// Must run before any component renders so the first frame is already instrumented.
-// DSN is safe to ship in the bundle — it only accepts inbound events, not reads.
+// ─── Sentry ───────────────────────────────────────────────────────────────────
+// Must run at module scope — instruments the first frame.
+// DSN is safe in the bundle: accepts inbound events only, no data reads.
+
 Sentry.init({
     dsn: process.env.EXPO_PUBLIC_SENTRY_DSN ?? '',
     environment: __DEV__ ? 'development' : 'production',
-    // 20% of sessions emit performance traces — adjust as traffic grows
     tracesSampleRate: __DEV__ ? 0 : 0.2,
-    // Disable native nagger dialog — errors surface in the Sentry dashboard
     enableNativeNagger: false,
-    // Breadcrumbs for console.warn/error aid debugging without PII leakage
     enableAutoPerformanceTracing: !__DEV__,
 });
 
 SplashScreen.preventAutoHideAsync();
 
+// ─── Root layout ──────────────────────────────────────────────────────────────
+
 export default function RootLayout() {
-    const scheme = useColorScheme();
-    const isDark = scheme === 'dark';
-
-    const initializeIdentity = useAuthStore((s) => s.initializeIdentity);
-    const isReady = useAuthStore((s) => s.isReady);
-    const deviceUser = useAuthStore((s) => s.deviceUser);
-    const initError = useAuthStore((s) => s.initError);
-    const setNetworkOnline = useConnectionStore((s) => s.setNetworkOnline);
-
-    // ── Identity ─────────────────────────────────────────────────────────────
-    useEffect(() => {
-        initializeIdentity();
-    }, [initializeIdentity]);
-
-    // ── Auth changes ──────────────────────────────────────────────────────────
-    useEffect(() => {
-        const unsubscribe = subscribeToAuthChanges();
-        return unsubscribe;
-    }, []);
-
-    // ── Network state ─────────────────────────────────────────────────────────
-    useEffect(() => {
-        // Fetch real initial state immediately — the first listener event fires
-        // asynchronously and would leave a stale gap on first render.
-        NetInfo.fetch().then((state) => {
-            setNetworkOnline(state.isConnected ?? false);
-        });
-
-        const unsubscribe = NetInfo.addEventListener((state) => {
-            setNetworkOnline(state.isConnected ?? false);
-        });
-        return () => { unsubscribe(); };
-    }, [setNetworkOnline]);
-
-    // ── Offline queue sync — mounted ONCE at root ─────────────────────────────
-    // Never call useOfflineSync() inside individual trip screens — that creates
-    // multiple racing instances sharing the same global queue.
-    useOfflineSync();
-
-    // ── Splash screen ─────────────────────────────────────────────────────────
-    const onReady = useCallback(async () => {
-        if (isReady) {
-            await SplashScreen.hideAsync();
-        }
-    }, [isReady]);
-
-    useEffect(() => { onReady(); }, [onReady]);
-
-    // ── Loading / error / onboarding gates ───────────────────────────────────
-    if (!isReady) {
-        return (
-            <View style={[styles.center, isDark ? styles.darkBg : styles.lightBg]}>
-                <ActivityIndicator size="large" color={isDark ? '#fff' : '#000'} />
-            </View>
-        );
-    }
-
-    if (initError) {
-        return (
-            <View style={[styles.center, isDark ? styles.darkBg : styles.lightBg]}>
-                <Text style={[styles.errorText, isDark ? styles.darkText : styles.lightText]}>
-                    Unable to start. Please check your connection and restart the app.
-                </Text>
-                <Text style={[styles.errorDetail, isDark ? styles.darkSubText : styles.lightSubText]}>
-                    {initError}
-                </Text>
-            </View>
-        );
-    }
-
-    if (deviceUser && deviceUser.displayName === null) {
-        return <OnboardingScreen />;
-    }
-
     return (
-        <GestureHandlerRootView style={{ flex: 1 }}>
+        <GestureHandlerRootView style={styles.flex}>
             <SafeAreaProvider>
                 <ToastProvider>
                     <AppErrorBoundary>
                         <ThemeProvider>
-                            <Stack
-                                screenOptions={{
-                                    headerStyle: { backgroundColor: isDark ? '#1c1c1e' : '#f2f2f7' },
-                                    headerTintColor: isDark ? '#ffffff' : '#000000',
-                                    headerShadowVisible: false,
-                                    contentStyle: { backgroundColor: isDark ? '#000000' : '#f2f2f7' },
-                                }}
-                            >
-                                <Stack.Screen name="index" options={{ title: '' }} />
-                                <Stack.Screen name="(trip)" options={{ headerShown: false }} />
-                            </Stack>
+                            <RootLayoutInner />
                         </ThemeProvider>
                     </AppErrorBoundary>
                 </ToastProvider>
@@ -143,14 +64,118 @@ export default function RootLayout() {
     );
 }
 
+// ─── Inner layout (needs ThemeContext) ───────────────────────────────────────
+
+function RootLayoutInner() {
+    const { colors } = useThemeContext();
+
+    const initializeIdentity = useAuthStore((s) => s.initializeIdentity);
+    const isReady = useAuthStore((s) => s.isReady);
+    const deviceUser = useAuthStore((s) => s.deviceUser);
+    const initError = useAuthStore((s) => s.initError);
+    const setNetworkOnline = useConnectionStore((s) => s.setNetworkOnline);
+
+    // ── Identity boot ─────────────────────────────────────────────────────────
+    useEffect(() => {
+        initializeIdentity();
+    }, [initializeIdentity]);
+
+    // ── Auth state subscription (single instance) ────────────────────────────
+    useEffect(() => {
+        const unsubscribe = subscribeToAuthChanges();
+        return unsubscribe;
+    }, []);
+
+    // ── Network listener ──────────────────────────────────────────────────────
+    // Fetch real initial state immediately — the first listener event fires
+    // asynchronously and would leave a stale gap on first render.
+    useEffect(() => {
+        NetInfo.fetch().then((state) => {
+            setNetworkOnline(state.isConnected ?? false);
+        });
+        const unsubscribe = NetInfo.addEventListener((state) => {
+            setNetworkOnline(state.isConnected ?? false);
+        });
+        return () => { unsubscribe(); };
+    }, [setNetworkOnline]);
+
+    // ── Offline queue — mounted once at root ──────────────────────────────────
+    // Any additional mount (e.g. in a trip screen) creates a race condition
+    // where multiple instances replay the same queue items concurrently.
+    useOfflineSync();
+
+    // ── Splash screen gate ────────────────────────────────────────────────────
+    const hideSplash = useCallback(async () => {
+        if (isReady) await SplashScreen.hideAsync();
+    }, [isReady]);
+
+    useEffect(() => { hideSplash(); }, [hideSplash]);
+
+    // ── Loading state ─────────────────────────────────────────────────────────
+    if (!isReady) {
+        return (
+            <View style={[styles.center, { backgroundColor: colors.bg }]}>
+                <ActivityIndicator size="large" color={colors.accent} />
+            </View>
+        );
+    }
+
+    // ── Init error ────────────────────────────────────────────────────────────
+    if (initError) {
+        return (
+            <View style={[styles.center, { backgroundColor: colors.bg }]}>
+                <Text style={[styles.errorHeading, { color: colors.text }]}>
+                    Unable to start
+                </Text>
+                <Text style={[styles.errorDetail, { color: colors.textSecondary }]}>
+                    Check your connection and restart the app.
+                </Text>
+                <Text style={[styles.errorDetail, { color: colors.textDisabled }]}>
+                    {initError}
+                </Text>
+            </View>
+        );
+    }
+
+    // ── Auth gate ─────────────────────────────────────────────────────────────
+    // No user at all → onboarding.
+    // User with no display name → onboarding (name entry step).
+    if (!deviceUser || deviceUser.displayName === null) {
+        return <Redirect href="/(auth)/onboarding" />;
+    }
+
+    // ── Main navigation ───────────────────────────────────────────────────────
+    return (
+        <>
+            <StatusBar style={colors.statusBarStyle} />
+            <Stack screenOptions={{ headerShown: false }}>
+                <Stack.Screen name="(auth)" options={{ headerShown: false }} />
+                <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
+                <Stack.Screen name="(trip)" options={{ headerShown: false }} />
+            </Stack>
+        </>
+    );
+}
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-    center: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: 24 },
-    lightBg: { backgroundColor: '#f2f2f7' },
-    darkBg: { backgroundColor: '#000000' },
-    lightText: { color: '#000000' },
-    darkText: { color: '#ffffff' },
-    lightSubText: { color: '#6c6c70' },
-    darkSubText: { color: '#8e8e93' },
-    errorText: { fontSize: 17, fontWeight: '500', textAlign: 'center', marginBottom: 8 },
-    errorDetail: { fontSize: 13, textAlign: 'center' },
+    flex: { flex: 1 },
+    center: {
+        flex: 1,
+        alignItems: 'center',
+        justifyContent: 'center',
+        padding: 24,
+    },
+    errorHeading: {
+        fontSize: 17,
+        fontWeight: '600',
+        textAlign: 'center',
+        marginBottom: 8,
+    },
+    errorDetail: {
+        fontSize: 13,
+        textAlign: 'center',
+        marginTop: 4,
+    },
 });

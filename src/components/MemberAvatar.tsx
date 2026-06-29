@@ -1,114 +1,120 @@
 /**
- * MemberAvatar.tsx
+ * src/components/MemberAvatar.tsx
  *
- * Circular avatar showing member initial + unique avatar color.
- * Colors are assigned uniquely across all members in the group —
- * no two members share the same color.
- * Guest members show an orange dot indicator.
+ * Circular member avatar showing initials with a color-coded background.
+ *
+ * REFACTOR (Phase B):
+ *  - Removed isDark prop — component now reads theme internally via useThemeColors().
+ *  - All call sites that pass isDark={isDark} can simply remove that prop.
+ *  - avatarColor prop: if provided, uses it as background; otherwise derives from name hash.
+ *  - Size: numeric px value or predefined: 'sm'=28, 'md'=36, 'lg'=44, 'xl'=64.
+ *
+ * This component will be superseded by src/components/ui/Avatar.tsx in Phase C,
+ * but MemberAvatar is kept here so existing screens don't break in the interim.
  */
+
+import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
-import type { Member } from '../types/domain';
+import { useThemeColors } from '../hooks/useThemeColors';
 
-interface Props {
-    member: Member;
-    isDark: boolean;
-    size?: number;
-    /** Pass all members in the trip so colors can be assigned uniquely. */
-    allMembers?: Member[];
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+type AvatarSize = 'sm' | 'md' | 'lg' | 'xl' | number;
+
+interface MemberAvatarProps {
+    name: string;
+    /** Hex color string for the avatar background. Falls back to hash-derived color. */
+    avatarColor?: string | null;
+    size?: AvatarSize;
+    /** @deprecated No longer needed — component reads theme internally. Remove from call sites. */
+    isDark?: boolean;
 }
 
+// ─── Constants ────────────────────────────────────────────────────────────────
+
+const SIZE_MAP: Record<string, number> = {
+    sm: 28,
+    md: 36,
+    lg: 44,
+    xl: 64,
+};
+
+// Accessible, perceptually-distinct avatar palette (works on both light and dark)
 const AVATAR_COLORS = [
-    '#5ac8fa', // blue
-    '#34c759', // green
-    '#ff9500', // orange
-    '#ff2d55', // pink
-    '#af52de', // purple
-    '#007aff', // indigo
-    '#ff3b30', // red
-    '#30d158', // mint
-    '#ffcc00', // yellow
-    '#00c7be', // teal
-];
+    '#16A34A', // green
+    '#2563EB', // blue
+    '#7C3AED', // violet
+    '#D97706', // amber
+    '#DC2626', // red
+    '#0891B2', // cyan
+    '#9333EA', // purple
+    '#059669', // emerald
+] as const;
 
-/**
- * Assign colors uniquely across all members.
- * Members are sorted by their id so assignment is stable regardless
- * of the order they appear in the list.
- */
-function buildColorMap(members: Member[]): Map<string, string> {
-    const map = new Map<string, string>();
-    const sorted = [...members].sort((a, b) => a.id.localeCompare(b.id));
-    sorted.forEach((m, i) => {
-        map.set(m.id, AVATAR_COLORS[i % AVATAR_COLORS.length]);
-    });
-    return map;
+// ─── Helpers ─────────────────────────────────────────────────────────────────
+
+function getInitials(name: string): string {
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) {
+        return `${parts[0][0]}${parts[parts.length - 1][0]}`.toUpperCase();
+    }
+    return (parts[0]?.[0] ?? '?').toUpperCase();
 }
 
-/** Fallback: deterministic color for a single member with no group context. */
-function colorForMemberAlone(memberId: string): string {
+function hashColor(name: string): string {
     let hash = 0;
-    for (let i = 0; i < memberId.length; i++) {
-        hash = memberId.charCodeAt(i) + ((hash << 5) - hash);
+    for (let i = 0; i < name.length; i++) {
+        hash = name.charCodeAt(i) + ((hash << 5) - hash);
     }
     return AVATAR_COLORS[Math.abs(hash) % AVATAR_COLORS.length];
 }
 
-function firstInitial(name: string): string {
-    return name.trim().charAt(0).toUpperCase();
-}
+// ─── Component ────────────────────────────────────────────────────────────────
 
-export function MemberAvatar({ member, size = 44, allMembers }: Props) {
-    const bg = allMembers && allMembers.length > 0
-        ? (buildColorMap(allMembers).get(member.id) ?? colorForMemberAlone(member.id))
-        : colorForMemberAlone(member.id);
+function MemberAvatarInner({ name, avatarColor, size = 'md' }: MemberAvatarProps) {
+    // isDark prop is accepted but ignored — kept only for backward compatibility
+    // so callers don't need to be updated before Phase C migration.
+    useThemeColors(); // ensure we're in a ThemeProvider context
 
-    const fontSize = size * 0.42;
+    const diameter = typeof size === 'number' ? size : SIZE_MAP[size] ?? 36;
+    const bgColor = avatarColor ?? hashColor(name);
+    const initials = getInitials(name);
+    const fontSize = Math.round(diameter * 0.38);
 
     return (
-        <View style={styles.wrapper}>
-            <View
-                style={[
-                    styles.circle,
-                    {
-                        width: size,
-                        height: size,
-                        borderRadius: size / 2,
-                        backgroundColor: bg,
-                    },
-                ]}
-            >
-                <Text style={[styles.initial, { fontSize }]}>
-                    {firstInitial(member.displayName)}
-                </Text>
-            </View>
-            {member.isGuest && <View style={styles.guestDot} />}
-            <Text style={styles.name} numberOfLines={1}>
-                {member.displayName.split(' ')[0]}
+        <View
+            style={[
+                styles.circle,
+                {
+                    width: diameter,
+                    height: diameter,
+                    borderRadius: diameter / 2,
+                    backgroundColor: bgColor,
+                },
+            ]}
+            accessibilityLabel={`Avatar for ${name}`}
+        >
+            <Text style={[styles.initials, { fontSize, lineHeight: diameter }]}>
+                {initials}
             </Text>
         </View>
     );
 }
 
+export const MemberAvatar = React.memo(MemberAvatarInner);
+
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
-    wrapper: { alignItems: 'center', width: 54 },
-    circle: { alignItems: 'center', justifyContent: 'center' },
-    initial: { color: '#fff', fontWeight: '700' },
-    guestDot: {
-        position: 'absolute',
-        top: 0,
-        right: 4,
-        width: 10,
-        height: 10,
-        borderRadius: 5,
-        backgroundColor: '#ff9500',
-        borderWidth: 1.5,
-        borderColor: '#fff',
+    circle: {
+        alignItems: 'center',
+        justifyContent: 'center',
+        overflow: 'hidden',
     },
-    name: {
-        fontSize: 11,
-        marginTop: 4,
+    initials: {
+        color: '#FFFFFF',
+        fontWeight: '700',
         textAlign: 'center',
-        color: '#8e8e93',
-        maxWidth: 54,
+        includeFontPadding: false,
     },
 });

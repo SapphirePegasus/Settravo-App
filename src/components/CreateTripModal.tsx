@@ -1,10 +1,17 @@
 /**
- * CreateTripModal.tsx
+ * src/components/CreateTripModal.tsx
  *
  * Sheet modal for creating a new trip. Collects name, destination, and dates.
  * Calls tripService.createTrip() then calls onCreated() with the result.
  *
- * Validation is done by the Zod schema in createTrip() — errors surface here.
+ * REFACTOR (Phase B):
+ *  - Removed isDark prop entirely — all callers must remove it too.
+ *  - Removed hardcoded light/dark color const objects at bottom of file.
+ *  - All colors now from useThemeColors() (ThemeContext driven).
+ *  - NOTE: This modal will be superseded by app/(trip)/create.tsx in Phase D.5.
+ *    Keep working for now — migrate callers to the new route in Phase D.
+ *
+ * Validation: Zod schema in createTrip() — errors surface here.
  */
 
 import { useState } from 'react';
@@ -20,18 +27,29 @@ import {
     View,
 } from 'react-native';
 import { ZodError } from 'zod';
+
+import { useThemeColors } from '../hooks/useThemeColors';
 import { createTrip } from '../services/tripService';
 import { useAuthStore } from '../stores/authStore';
 import type { Trip } from '../types/domain';
+import { spacing, typography, radii } from '@/theme';
+
+// ─── Props ────────────────────────────────────────────────────────────────────
 
 interface Props {
-    isDark: boolean;
     onClose: () => void;
     onCreated: (trip: Trip) => void;
+    /**
+     * @deprecated isDark is no longer needed — remove from all call sites.
+     * Kept for backwards compatibility only; has no effect.
+     */
+    isDark?: boolean;
 }
 
-export function CreateTripModal({ isDark, onClose, onCreated }: Props) {
-    const colors = isDark ? dark : light;
+// ─── Component ────────────────────────────────────────────────────────────────
+
+export function CreateTripModal({ onClose, onCreated }: Props) {
+    const colors = useThemeColors();
     const deviceUser = useAuthStore((s) => s.deviceUser);
 
     const [name, setName] = useState('');
@@ -64,59 +82,91 @@ export function CreateTripModal({ isDark, onClose, onCreated }: Props) {
 
     return (
         <KeyboardAvoidingView
-            style={[styles.root, { backgroundColor: colors.bg }]}
+            style={[styles.root, { backgroundColor: colors.surface }]}
             behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         >
             {/* Handle bar */}
             <View style={styles.handleBar}>
-                <View style={[styles.handle, { backgroundColor: colors.handle }]} />
+                <View style={[styles.handle, { backgroundColor: colors.separator }]} />
             </View>
 
-            <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
+            <ScrollView
+                contentContainerStyle={styles.content}
+                keyboardShouldPersistTaps="handled"
+            >
                 <Text style={[styles.heading, { color: colors.text }]}>New Trip</Text>
 
-                <Text style={[styles.label, { color: colors.subText }]}>Trip name *</Text>
+                {/* Trip name */}
+                <Text style={[styles.label, { color: colors.textSecondary }]}>Trip name *</Text>
                 <TextInput
-                    style={[styles.input, { backgroundColor: colors.inputBg, color: colors.text, borderColor: colors.border }]}
+                    style={[
+                        styles.input,
+                        {
+                            backgroundColor: colors.inputBg,
+                            color: colors.text,
+                            borderColor: colors.cardBorder,
+                        },
+                    ]}
                     placeholder="e.g. Goa 2026"
                     placeholderTextColor={colors.placeholder}
                     value={name}
-                    onChangeText={setName}
+                    onChangeText={(t) => {
+                        setName(t);
+                        if (error) setError(null);
+                    }}
                     autoFocus
-                    maxLength={80}
+                    autoCapitalize="words"
                     returnKeyType="next"
-                    editable={!loading}
+                    maxLength={80}
                 />
 
-                <Text style={[styles.label, { color: colors.subText }]}>Destination</Text>
+                {/* Destination */}
+                <Text style={[styles.label, { color: colors.textSecondary }]}>Destination (optional)</Text>
                 <TextInput
-                    style={[styles.input, { backgroundColor: colors.inputBg, color: colors.text, borderColor: colors.border }]}
+                    style={[
+                        styles.input,
+                        {
+                            backgroundColor: colors.inputBg,
+                            color: colors.text,
+                            borderColor: colors.cardBorder,
+                        },
+                    ]}
                     placeholder="e.g. Goa, India"
                     placeholderTextColor={colors.placeholder}
                     value={destination}
                     onChangeText={setDestination}
-                    maxLength={100}
                     returnKeyType="done"
                     onSubmitEditing={handleCreate}
-                    editable={!loading}
+                    maxLength={100}
                 />
 
+                {/* Error */}
                 {error ? (
-                    <Text style={[styles.errorText, { color: colors.error }]}>{error}</Text>
+                    <Text style={[styles.errorText, { color: colors.danger }]}>{error}</Text>
                 ) : null}
 
+                {/* Buttons */}
                 <View style={styles.buttons}>
                     <Pressable
-                        style={[styles.cancelButton, { backgroundColor: colors.cardBg }]}
+                        style={[styles.cancelButton, { backgroundColor: colors.subSurface }]}
                         onPress={onClose}
-                        disabled={loading}
+                        accessibilityRole="button"
+                        accessibilityLabel="Cancel"
                     >
-                        <Text style={[styles.cancelText, { color: colors.text }]}>Cancel</Text>
+                        <Text style={[styles.cancelText, { color: colors.textSecondary }]}>Cancel</Text>
                     </Pressable>
+
                     <Pressable
-                        style={[styles.createButton, { backgroundColor: colors.accent, opacity: loading ? 0.7 : 1 }]}
+                        style={[
+                            styles.createButton,
+                            { backgroundColor: colors.accent },
+                            (!name.trim() || loading) && styles.buttonDisabled,
+                        ]}
                         onPress={handleCreate}
-                        disabled={loading}
+                        disabled={!name.trim() || loading}
+                        accessibilityRole="button"
+                        accessibilityLabel="Create trip"
+                        accessibilityState={{ disabled: !name.trim() || loading }}
                     >
                         {loading ? (
                             <ActivityIndicator color="#fff" />
@@ -130,21 +180,39 @@ export function CreateTripModal({ isDark, onClose, onCreated }: Props) {
     );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
     root: { flex: 1 },
     handleBar: { alignItems: 'center', paddingTop: 12, paddingBottom: 4 },
     handle: { width: 36, height: 4, borderRadius: 2 },
-    content: { padding: 24, paddingTop: 16 },
-    heading: { fontSize: 24, fontWeight: '700', marginBottom: 24 },
-    label: { fontSize: 13, fontWeight: '500', marginBottom: 6, marginTop: 16 },
-    input: { height: 48, borderRadius: 12, borderWidth: 1, paddingHorizontal: 14, fontSize: 16 },
-    errorText: { fontSize: 13, marginTop: 8 },
-    buttons: { flexDirection: 'row', gap: 12, marginTop: 32 },
-    cancelButton: { flex: 1, height: 52, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-    cancelText: { fontSize: 16, fontWeight: '500' },
-    createButton: { flex: 1, height: 52, borderRadius: 14, alignItems: 'center', justifyContent: 'center' },
-    createText: { color: '#fff', fontSize: 16, fontWeight: '600' },
+    content: { padding: spacing.lg, paddingTop: spacing.md },
+    heading: { ...typography.heading, marginBottom: spacing.lg },
+    label: { ...typography.caption, fontWeight: '500', marginBottom: 6, marginTop: spacing.md },
+    input: {
+        height: 48,
+        borderRadius: radii.md,
+        borderWidth: 1,
+        paddingHorizontal: spacing.md,
+        ...typography.body,
+    },
+    errorText: { ...typography.caption, marginTop: spacing.sm },
+    buttons: { flexDirection: 'row', gap: spacing.sm, marginTop: spacing.xl },
+    cancelButton: {
+        flex: 1,
+        height: 52,
+        borderRadius: radii.md,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    cancelText: { ...typography.bodyMd },
+    createButton: {
+        flex: 1,
+        height: 52,
+        borderRadius: radii.md,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    buttonDisabled: { opacity: 0.45 },
+    createText: { color: '#fff', ...typography.bodyMd, fontWeight: '600' },
 });
-
-const light = { bg: '#f2f2f7', text: '#000000', subText: '#6c6c70', inputBg: '#ffffff', border: '#c6c6c8', placeholder: '#8e8e93', accent: '#007aff', error: '#ff3b30', handle: '#c6c6c8', cardBg: '#ffffff' };
-const dark = { bg: '#1c1c1e', text: '#ffffff', subText: '#8e8e93', inputBg: '#2c2c2e', border: '#38383a', placeholder: '#636366', accent: '#0a84ff', error: '#ff453a', handle: '#48484a', cardBg: '#2c2c2e' };

@@ -4,13 +4,18 @@
  * LAYER 1 — Raw palette (private, never imported directly by components)
  * LAYER 2 — Semantic tokens (exported, the ONLY color reference in all components)
  *
+ * Exports:
+ *   ColorScheme  — type for the full token set
+ *   dayScheme    — light mode token values
+ *   nightScheme  — dark mode token values
+ *
  * Rules:
  *  - No component ever references a hex string directly.
- *  - Accent tokens are placeholders; they are injected at runtime by useThemeColors().
- *  - All additions go here first, then surface in useThemeColors().
+ *  - Accent tokens are placeholders; ThemeContext injects real values at runtime.
+ *  - All color additions go here first.
  */
 
-// ─── Layer 1: Raw palette (private) ──────────────────────────────────────────
+// ─── Layer 1: Raw palette (private — NOT exported) ───────────────────────────
 
 const palette = {
     // Greens
@@ -42,17 +47,15 @@ const palette = {
     dark800: '#13141C',
     dark700: '#1A1B26',
     dark600: '#252636',
-    dark500: '#2E2F42',
     dark400: '#4B5563',
     dark300: '#8888AA',
     dark100: '#F0F1FF',
 
     // Pure
     white: '#FFFFFF',
-    black: '#000000',
 } as const;
 
-// ─── Layer 2: Semantic token shape ───────────────────────────────────────────
+// ─── Layer 2: Semantic token type ─────────────────────────────────────────────
 
 export type ColorScheme = {
     // Backgrounds
@@ -67,7 +70,7 @@ export type ColorScheme = {
     textDisabled: string;
     textInverse: string;
 
-    // Accent — injected at runtime from user's color preference
+    // Accent — placeholders replaced at runtime by ThemeContext
     accent: string;
     accentLight: string;
     accentDim: string;
@@ -80,10 +83,10 @@ export type ColorScheme = {
     warning: string;
     warningMuted: string;
 
-    // Financial semantics (distinct from status for semantic clarity)
-    owed: string;       // money owed TO you
-    owe: string;        // money you OWE
-    settled: string;    // settled/neutral state
+    // Financial semantics
+    owed: string;
+    owe: string;
+    settled: string;
 
     // UI chrome
     separator: string;
@@ -91,13 +94,23 @@ export type ColorScheme = {
     placeholder: string;
     icon: string;
     statusBarStyle: 'light' | 'dark';
+
+    // Component-specific tokens (avoids hardcoding in components)
+    /** Background for emoji/icon tiles (e.g. TripCard emoji box) */
+    emojiBox: string;
+    /** Input field background — distinct from card in dark mode */
+    inputBg: string;
+    /** Muted secondary surface — slightly more elevated than bg */
+    subSurface: string;
 };
 
-// ─── Day (light) scheme ───────────────────────────────────────────────────────
-// Accent placeholders are overwritten in useThemeColors() at runtime.
+// ─── Accent placeholder defaults (overwritten at runtime) ─────────────────────
+
 const ACCENT_PLACEHOLDER = '#22C55E';
 const ACCENT_LIGHT_PLACEHOLDER = '#DCFCE7';
 const ACCENT_DIM_PLACEHOLDER = '#86EFAC';
+
+// ─── Day (light) scheme ───────────────────────────────────────────────────────
 
 export const dayScheme: ColorScheme = {
     bg: palette.gray50,
@@ -130,6 +143,10 @@ export const dayScheme: ColorScheme = {
     placeholder: palette.gray400,
     icon: palette.gray500,
     statusBarStyle: 'dark',
+
+    emojiBox: palette.gray100,
+    inputBg: palette.white,
+    subSurface: palette.gray50,
 };
 
 // ─── Night (dark) scheme ──────────────────────────────────────────────────────
@@ -165,4 +182,8 @@ export const nightScheme: ColorScheme = {
     placeholder: palette.dark400,
     icon: palette.dark300,
     statusBarStyle: 'light',
+
+    emojiBox: palette.dark600,
+    inputBg: palette.dark600,
+    subSurface: palette.dark800,
 };
