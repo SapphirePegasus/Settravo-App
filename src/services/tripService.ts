@@ -10,10 +10,12 @@
  *  - Returns domain types only — raw DB rows never leave this file
  */
 
+import * as ExpoCrypto from 'expo-crypto';
 import { supabase } from '../lib/supabase';
 import type { Member, Trip } from '../types/domain';
 import type { Database } from '../types/supabase';
 import { AppError } from '@/errors/AppError';
+
 import { generateExpiresAt, generateJoinCode } from '../utils/joinCode';
 import {
     CreateTripSchema,
@@ -65,7 +67,7 @@ function mapTrip(row: TripRow): Trip {
  * which IS available in all Hermes versions.
  * The fallback produces a spec-compliant v4 UUID string.
  */
-function generateUUID(): string {
+/*function generateUUID(): string {
     if (typeof crypto !== 'undefined' && typeof crypto.randomUUID === 'function') {
         return crypto.randomUUID();
     }
@@ -96,6 +98,10 @@ function generateUUID(): string {
         hex.slice(8, 10).join(''),
         hex.slice(10, 16).join(''),
     ].join('-');
+}*/
+
+function generateUUID(): string {
+    return ExpoCrypto.randomUUID();
 }
 
 /**

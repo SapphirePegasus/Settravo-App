@@ -49,7 +49,7 @@ import { useAuthStore } from '../../../stores/authStore';
 import { useConnectionStore } from '../../../stores/connectionStore';
 import { useExpenseStore } from '../../../stores/expenseStore';
 import { useTripStore } from '../../../stores/tripStore';
-import type { ExpenseCategory } from '../../../types/domain';
+import type { ExpenseCategory, Split } from '../../../types/domain';
 import { formatRupees, parseRupeesToPaise, splitEvenly } from '../../../utils/money';
 import { validateSplitTotal } from '../../../validation/schemas';
 
@@ -61,6 +61,8 @@ const CATEGORIES: { label: string; value: ExpenseCategory }[] = [
     { label: '🏨 Stay', value: 'stay' },
     { label: '📦 Misc', value: 'misc' },
 ];
+
+const EMPTY_SPLITS: Split[] = [];
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
@@ -85,16 +87,14 @@ export default function AddExpenseScreen() {
     const setSplitsInStore = useExpenseStore((s) => s.setSplits);
     const enqueueOfflineItem = useTripStore((s) => s.enqueueOfflineItem);
 
-    // In edit mode — load the existing expense from the store (already fetched
-    // by the trip detail screen; no extra network call needed).
-    const existingExpense = useExpenseStore(
-        (s) =>
-            isEditMode && tripId && expenseId
-                ? (s.expenses[tripId] ?? []).find((e) => e.id === expenseId) ?? null
-                : null,
-    );
+    const existingExpense = useExpenseStore((s) => {
+        if (!isEditMode || !tripId || !expenseId) return null;
+        const list = s.expenses[tripId];
+        if (!list) return null;
+        return list.find((e) => e.id === expenseId) ?? null;
+    });
     const existingSplits = useExpenseStore(
-        (s) => (expenseId ? (s.splits[expenseId] ?? []) : []),
+        (s) => (expenseId ? s.splits[expenseId] ?? EMPTY_SPLITS : EMPTY_SPLITS),
     );
 
     const members = useMembers(tripId ?? '');

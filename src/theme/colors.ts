@@ -1,94 +1,168 @@
 /**
- * colors.ts
+ * src/theme/colors.ts
  *
- * Single source of truth for all colour tokens in Settravo.
- * Every screen and component must import from here — never define
- * inline light/dark objects locally.
+ * LAYER 1 — Raw palette (private, never imported directly by components)
+ * LAYER 2 — Semantic tokens (exported, the ONLY color reference in all components)
  *
- * Token naming convention:
- *  bg           → root screen background
- *  bgSecondary  → slightly elevated surface (grouped table bg)
- *  card         → card / list-row surface
- *  cardElevated → card sitting on top of another card
- *  text         → primary label text
- *  textSecondary→ secondary label (slightly dimmed)
- *  subText      → tertiary / caption text
- *  accent       → interactive tint (buttons, links)
- *  accentDestructive → red (delete, leave)
- *  accentSuccess → green (settled, success state)
- *  accentWarning → amber (offline, pending sync)
- *  separator    → hairline dividers
- *  inputBg      → TextInput fill
- *  inputBorder  → TextInput border (resting)
- *  placeholder  → TextInput placeholder text
- *  pendingSync  → isPendingSync badge colour
- *  handleBar    → bottom-sheet drag handle
- *  settled      → "all settled" celebration colour
- *  warningBg    → offline banner background
- *  warningText  → offline banner text
- *  border       → alias for inputBorder (legacy compat)
- *  error        → validation error text / border
- *  buttonBg     → primary filled button background
- *
- * Values follow Apple Human Interface Guidelines system palette so the
- * app looks native on iOS and consistent on Android.
+ * Rules:
+ *  - No component ever references a hex string directly.
+ *  - Accent tokens are placeholders; they are injected at runtime by useThemeColors().
+ *  - All additions go here first, then surface in useThemeColors().
  */
 
-export const Colors = {
-    light: {
-        bg: '#f2f2f7',
-        bgSecondary: '#ffffff',
-        card: '#ffffff',
-        cardElevated: '#f2f2f7',
-        text: '#000000',
-        textSecondary: '#3c3c43',
-        subText: '#6c6c70',
-        accent: '#007aff',
-        accentDestructive: '#ff3b30',
-        accentSuccess: '#34c759',
-        accentWarning: '#ff9500',
-        separator: '#c6c6c8',
-        inputBg: '#ffffff',
-        inputBorder: '#c6c6c8',
-        placeholder: '#8e8e93',
-        pendingSync: '#ff9500',
-        handleBar: '#c6c6c8',
-        settled: '#34c759',
-        warningBg: '#fff3cd',
-        warningText: '#856404',
-        // Legacy aliases kept for backward compat during migration
-        border: '#c6c6c8',
-        error: '#ff3b30',
-        buttonBg: '#007aff',
-        headerBg: '#e8e8ed',
-        emojiBox: '#f2f2f7',
-    },
-    dark: {
-        bg: '#000000',
-        bgSecondary: '#1c1c1e',
-        card: '#1c1c1e',
-        cardElevated: '#2c2c2e',
-        text: '#ffffff',
-        textSecondary: '#ebebf5',
-        subText: '#8e8e93',
-        accent: '#0a84ff',
-        accentDestructive: '#ff453a',
-        accentSuccess: '#30d158',
-        accentWarning: '#ff9f0a',
-        separator: '#38383a',
-        inputBg: '#1c1c1e',
-        inputBorder: '#38383a',
-        placeholder: '#636366',
-        pendingSync: '#ff9f0a',
-        handleBar: '#48484a',
-        settled: '#30d158',
-        warningBg: '#3a2e00',
-        warningText: '#ffd60a',
-        // Legacy aliases
-        border: '#38383a',
-        error: '#ff453a',
-        buttonBg: '#0a84ff',
-        headerBg: '#1c1c1e',
-        emojiBox: '#2c2c2e',
-    },
+// ─── Layer 1: Raw palette (private) ──────────────────────────────────────────
+
+const palette = {
+    // Greens
+    green500: '#22C55E',
+    green600: '#16A34A',
+    green100: '#DCFCE7',
+    green900: '#14532D',
+
+    // Reds
+    red400: '#F87171',
+    red600: '#DC2626',
+    red100: '#FEE2E2',
+
+    // Ambers
+    amber400: '#FBBF24',
+    amber600: '#D97706',
+    amber100: '#FEF3C7',
+
+    // Grays (light mode)
+    gray50: '#F5F6F8',
+    gray100: '#F0F0F5',
+    gray200: '#E8E9EF',
+    gray400: '#9CA3AF',
+    gray500: '#6B6B80',
+    gray900: '#0D0D14',
+
+    // Darks (dark mode)
+    dark900: '#0A0B10',
+    dark800: '#13141C',
+    dark700: '#1A1B26',
+    dark600: '#252636',
+    dark500: '#2E2F42',
+    dark400: '#4B5563',
+    dark300: '#8888AA',
+    dark100: '#F0F1FF',
+
+    // Pure
+    white: '#FFFFFF',
+    black: '#000000',
 } as const;
+
+// ─── Layer 2: Semantic token shape ───────────────────────────────────────────
+
+export type ColorScheme = {
+    // Backgrounds
+    bg: string;
+    surface: string;
+    card: string;
+    cardBorder: string;
+
+    // Text
+    text: string;
+    textSecondary: string;
+    textDisabled: string;
+    textInverse: string;
+
+    // Accent — injected at runtime from user's color preference
+    accent: string;
+    accentLight: string;
+    accentDim: string;
+
+    // Status
+    success: string;
+    successMuted: string;
+    danger: string;
+    dangerMuted: string;
+    warning: string;
+    warningMuted: string;
+
+    // Financial semantics (distinct from status for semantic clarity)
+    owed: string;       // money owed TO you
+    owe: string;        // money you OWE
+    settled: string;    // settled/neutral state
+
+    // UI chrome
+    separator: string;
+    overlay: string;
+    placeholder: string;
+    icon: string;
+    statusBarStyle: 'light' | 'dark';
+};
+
+// ─── Day (light) scheme ───────────────────────────────────────────────────────
+// Accent placeholders are overwritten in useThemeColors() at runtime.
+const ACCENT_PLACEHOLDER = '#22C55E';
+const ACCENT_LIGHT_PLACEHOLDER = '#DCFCE7';
+const ACCENT_DIM_PLACEHOLDER = '#86EFAC';
+
+export const dayScheme: ColorScheme = {
+    bg: palette.gray50,
+    surface: palette.white,
+    card: palette.white,
+    cardBorder: palette.gray200,
+
+    text: palette.gray900,
+    textSecondary: palette.gray500,
+    textDisabled: palette.gray400,
+    textInverse: palette.white,
+
+    accent: ACCENT_PLACEHOLDER,
+    accentLight: ACCENT_LIGHT_PLACEHOLDER,
+    accentDim: ACCENT_DIM_PLACEHOLDER,
+
+    success: palette.green600,
+    successMuted: palette.green100,
+    danger: palette.red600,
+    dangerMuted: palette.red100,
+    warning: palette.amber600,
+    warningMuted: palette.amber100,
+
+    owed: palette.green600,
+    owe: palette.red600,
+    settled: palette.gray400,
+
+    separator: palette.gray100,
+    overlay: 'rgba(0,0,0,0.40)',
+    placeholder: palette.gray400,
+    icon: palette.gray500,
+    statusBarStyle: 'dark',
+};
+
+// ─── Night (dark) scheme ──────────────────────────────────────────────────────
+
+export const nightScheme: ColorScheme = {
+    bg: palette.dark900,
+    surface: palette.dark800,
+    card: palette.dark700,
+    cardBorder: palette.dark600,
+
+    text: palette.dark100,
+    textSecondary: palette.dark300,
+    textDisabled: palette.dark400,
+    textInverse: palette.white,
+
+    accent: ACCENT_PLACEHOLDER,
+    accentLight: ACCENT_LIGHT_PLACEHOLDER,
+    accentDim: ACCENT_DIM_PLACEHOLDER,
+
+    success: palette.green500,
+    successMuted: palette.green900,
+    danger: palette.red400,
+    dangerMuted: '#3B0000',
+    warning: palette.amber400,
+    warningMuted: '#3B2200',
+
+    owed: palette.green500,
+    owe: palette.red400,
+    settled: palette.dark400,
+
+    separator: '#1E1F2E',
+    overlay: 'rgba(0,0,0,0.60)',
+    placeholder: palette.dark400,
+    icon: palette.dark300,
+    statusBarStyle: 'light',
+};

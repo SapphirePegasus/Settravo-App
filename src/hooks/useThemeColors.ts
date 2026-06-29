@@ -1,25 +1,32 @@
 /**
- * useThemeColors.ts
+ * src/hooks/useThemeColors.ts
  *
- * Returns the correct colour token set for the current system appearance.
- * All screens and components call this hook instead of defining their own
- * light/dark objects.
+ * Drop-in replacement for the old useThemeColors hook.
  *
- * Usage:
+ * OLD behaviour: read useColorScheme() directly, return light/dark object.
+ * NEW behaviour: read from ThemeContext (which handles daynight, system,
+ *   accent injection, and SecureStore persistence) and return ColorScheme.
+ *
+ * All existing call sites work unchanged:
  *   const colors = useThemeColors();
  *   <View style={{ backgroundColor: colors.bg }} />
+ *
+ * The exported ThemeColors type is an alias for ColorScheme so any file
+ * that imports `ThemeColors` continues to compile.
  */
 
-import { useColorScheme } from 'react-native';
-import { Colors } from '../theme/colors';
+import { ColorScheme } from '@/theme/colors';
+import { useThemeColors as _useThemeColors } from '@/context/ThemeContext';
 
-// Derive a widened type where each value is `string` not a literal —
-// this makes light and dark both assignable without losing autocompletion.
-export type ThemeColors = {
-    [K in keyof typeof Colors.light]: string;
-};
+/** Public type alias — matches old usage `ThemeColors` across the codebase. */
+export type ThemeColors = ColorScheme;
 
+/**
+ * Returns the fully resolved color scheme for the current theme mode
+ * and accent preference.
+ *
+ * Must be called inside a component tree wrapped by <ThemeProvider>.
+ */
 export function useThemeColors(): ThemeColors {
-    const scheme = useColorScheme();
-    return (scheme === 'dark' ? Colors.dark : Colors.light) as ThemeColors;
+  return _useThemeColors();
 }
