@@ -1,13 +1,10 @@
 /**
  * app/(trip)/[tripId]/qr.tsx — QR Code + Share screen
  *
- * Shows QR code for joining the trip, countdown timer, regenerate, and
- * per-member guest link sharing.
- *
- * REFACTOR: removed useColorScheme() + broken token refs.
- * colors.subText → colors.textSecondary
- * colors.warningText → colors.warning
- * colors.border → colors.cardBorder
+ * All emoji replaced:
+ *   ⏱ expired icon → <Icon name="status.syncing" /> (clock/hourglass)
+ *   🔄 New Code → <Icon name="action.refresh" />
+ *   📤 Share Code / Share (guest links) → <Icon name="action.share" />
  */
 
 import { useLocalSearchParams } from 'expo-router';
@@ -24,6 +21,7 @@ import {
 import QRCode from 'react-native-qrcode-svg';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { Icon } from '../../../components/ui/Icon';
 import { useThemeColors } from '../../../hooks/useThemeColors';
 import { useMembers } from '../../../hooks/useMembers';
 import { buildGuestUrl } from '../../../services/memberService';
@@ -43,15 +41,12 @@ export default function QRScreen() {
     const { tripId } = useLocalSearchParams<{ tripId: string }>();
     const colors = useThemeColors();
     const members = useMembers(tripId ?? '');
-
     const guestMembers = members.filter((m) => m.isGuest && m.guestToken);
 
     const [trip, setTrip] = useState<Trip | null>(null);
     const [loading, setLoading] = useState(true);
     const [regenerating, setRegenerating] = useState(false);
     const [secondsLeft, setSecondsLeft] = useState(0);
-
-    // ── Load trip ─────────────────────────────────────────────────────────────
 
     const loadTrip = useCallback(async () => {
         if (!tripId) return;
@@ -67,8 +62,6 @@ export default function QRScreen() {
 
     useEffect(() => { loadTrip(); }, [loadTrip]);
 
-    // ── Countdown timer ───────────────────────────────────────────────────────
-
     useEffect(() => {
         if (!trip || isJoinCodeExpired(trip.joinCodeExpiresAt)) return;
         const timer = setInterval(() => {
@@ -79,8 +72,6 @@ export default function QRScreen() {
         }, 1000);
         return () => clearInterval(timer);
     }, [trip]);
-
-    // ── Actions ───────────────────────────────────────────────────────────────
 
     const handleRegenerate = useCallback(async () => {
         if (!tripId) return;
@@ -112,8 +103,6 @@ export default function QRScreen() {
         });
     }, [members, trip]);
 
-    // ── Render ────────────────────────────────────────────────────────────────
-
     const expired = !trip || isJoinCodeExpired(trip.joinCodeExpiresAt);
     const qrValue = trip?.joinCode ? `${QR_PREFIX}${trip.joinCode}` : '';
     const isLowTime = secondsLeft < 120;
@@ -128,10 +117,7 @@ export default function QRScreen() {
 
     return (
         <SafeAreaView style={[styles.root, { backgroundColor: colors.bg }]} edges={['top', 'left', 'right']}>
-            <ScrollView
-                contentContainerStyle={styles.content}
-                showsVerticalScrollIndicator={false}
-            >
+            <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
                 <Text style={[typography.heading, { color: colors.text, marginBottom: spacing.xs }]}>
                     Invite to Trip
                 </Text>
@@ -139,13 +125,13 @@ export default function QRScreen() {
                     Others scan this to join {trip?.name ?? 'the trip'}.
                 </Text>
 
-                {/* QR card */}
+                {/* QR card — always white so QR scanners work regardless of theme */}
                 <View style={[styles.qrCard, { backgroundColor: '#FFFFFF', ...shadows.mid }]}>
                     {!expired && qrValue ? (
                         <QRCode value={qrValue} size={220} color="#000000" backgroundColor="#FFFFFF" />
                     ) : (
                         <View style={styles.expiredBox}>
-                            <Text style={styles.expiredIcon}>⏱</Text>
+                            <Icon name="status.syncing" size={48} color={colors.textSecondary} />
                             <Text style={[typography.bodyMd, { color: colors.textSecondary }]}>
                                 Code expired
                             </Text>
@@ -181,7 +167,10 @@ export default function QRScreen() {
                         {regenerating ? (
                             <ActivityIndicator color={colors.accent} />
                         ) : (
-                            <Text style={[typography.bodyMd, { color: colors.text }]}>🔄 New Code</Text>
+                            <>
+                                <Icon name="action.refresh" size={18} color={colors.icon} />
+                                <Text style={[typography.bodyMd, { color: colors.text }]}>New Code</Text>
+                            </>
                         )}
                     </Pressable>
 
@@ -192,9 +181,8 @@ export default function QRScreen() {
                         accessibilityRole="button"
                         accessibilityLabel="Share join code"
                     >
-                        <Text style={[typography.bodyMd, { color: colors.textInverse }]}>
-                            📤 Share Code
-                        </Text>
+                        <Icon name="action.share" size={18} color={colors.textInverse} />
+                        <Text style={[typography.bodyMd, { color: colors.textInverse }]}>Share Code</Text>
                     </Pressable>
                 </View>
 
@@ -216,7 +204,10 @@ export default function QRScreen() {
                                     <Text style={[typography.bodyMd, { color: colors.text }]}>{m.displayName}</Text>
                                     <Text style={[typography.caption, { color: colors.textSecondary }]}>Guest</Text>
                                 </View>
-                                <Text style={[typography.caption, { color: colors.accent }]}>📤 Share</Text>
+                                <View style={styles.guestShareBtn}>
+                                    <Icon name="action.share" size={14} color={colors.accent} />
+                                    <Text style={[typography.caption, { color: colors.accent }]}>Share</Text>
+                                </View>
                             </Pressable>
                         ))}
                     </View>
@@ -229,11 +220,7 @@ export default function QRScreen() {
 const styles = StyleSheet.create({
     root: { flex: 1 },
     centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-    content: {
-        padding: spacing.lg,
-        paddingBottom: spacing.xxl,
-        alignItems: 'center',
-    },
+    content: { padding: spacing.lg, paddingBottom: spacing.xxl, alignItems: 'center' },
     qrCard: {
         padding: spacing.lg,
         borderRadius: radii.lg,
@@ -243,12 +230,7 @@ const styles = StyleSheet.create({
         minHeight: 260,
     },
     expiredBox: { alignItems: 'center', gap: spacing.sm },
-    expiredIcon: { fontSize: 48 },
-    codeRow: {
-        alignItems: 'center',
-        gap: spacing.xs,
-        marginBottom: spacing.lg,
-    },
+    codeRow: { alignItems: 'center', gap: spacing.xs, marginBottom: spacing.lg },
     codeDisplay: {
         fontSize: 36,
         fontWeight: '800',
@@ -263,23 +245,25 @@ const styles = StyleSheet.create({
     },
     secondaryBtn: {
         flex: 1,
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: spacing.xs,
         height: 48,
         borderRadius: radii.md,
         borderWidth: 1,
-        alignItems: 'center',
-        justifyContent: 'center',
     },
     primaryBtn: {
         flex: 1,
-        height: 48,
-        borderRadius: radii.md,
+        flexDirection: 'row',
         alignItems: 'center',
         justifyContent: 'center',
+        gap: spacing.xs,
+        height: 48,
+        borderRadius: radii.md,
     },
     disabled: { opacity: 0.5 },
-    guestSection: {
-        width: '100%',
-    },
+    guestSection: { width: '100%' },
     guestRow: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -290,4 +274,5 @@ const styles = StyleSheet.create({
         marginBottom: spacing.sm,
     },
     guestInfo: { gap: 2 },
+    guestShareBtn: { flexDirection: 'row', alignItems: 'center', gap: 4 },
 });

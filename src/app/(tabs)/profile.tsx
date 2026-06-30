@@ -7,12 +7,13 @@
  *   3. Account — Invite, Clear Data, Log Out
  *   4. Footer — App version + device ID tail
  *
- * No external packages. Theme/Color pickers use BottomSheet + option rows.
- * All colors from useThemeColors(). Zero hardcoded hex.
+ * All emoji removed from THEME_OPTIONS labels and settings rows.
+ * Chevron ›  replaced with <Icon name="header.forward" />.
+ * Check ✓    replaced with <Icon name="action.check" />.
+ * Theme option icons replaced with <Icon name="theme.*" />.
  */
 
 import * as Haptics from 'expo-haptics';
-//import * as Application from 'expo-application';
 import { useCallback, useState } from 'react';
 import {
     ActivityIndicator,
@@ -30,20 +31,22 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Avatar } from '../../components/ui/Avatar';
 import { BottomSheet } from '../../components/ui/BottomSheet';
 import { Divider } from '../../components/ui/Divider';
+import { Icon } from '../../components/ui/Icon';
 import { useThemeContext } from '@/context/ThemeContext';
 import { useThemeColors } from '../../hooks/useThemeColors';
 import { useAuthStore } from '../../stores/authStore';
 import { ACCENT_PRESETS } from '@/theme/presets';
 import type { ThemePreference } from '@/hooks/useThemeMode';
+import type { IconKey } from '@/config/icons';
 import { spacing, typography, radii } from '@/theme';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-const THEME_OPTIONS: { value: ThemePreference; label: string; description: string }[] = [
-    { value: 'light', label: '☀️ Light', description: 'Always light' },
-    { value: 'dark', label: '🌙 Dark', description: 'Always dark' },
-    { value: 'daynight', label: '🌅 Day/Night', description: 'Auto: light 5am–5pm' },
-    { value: 'system', label: '📱 System', description: 'Follow device setting' },
+const THEME_OPTIONS: { value: ThemePreference; label: string; description: string; iconKey: IconKey }[] = [
+    { value: 'light', label: 'Light', description: 'Always light', iconKey: 'theme.day' },
+    { value: 'dark', label: 'Dark', description: 'Always dark', iconKey: 'theme.night' },
+    { value: 'daynight', label: 'Day / Night', description: 'Auto: light 5am–5pm', iconKey: 'theme.auto' },
+    { value: 'system', label: 'System', description: 'Follow device setting', iconKey: 'theme.device' },
 ];
 
 // ─── Sub-components ───────────────────────────────────────────────────────────
@@ -71,9 +74,12 @@ function SettingsRow({
                 {label}
             </Text>
             {value ? (
-                <Text style={[typography.body, { color: colors.textSecondary }]}>{value}</Text>
+                <View style={styles.rowRight}>
+                    <Text style={[typography.body, { color: colors.textSecondary }]}>{value}</Text>
+                    <Icon name="header.forward" size={16} color={colors.icon} />
+                </View>
             ) : (
-                <Text style={[styles.chevron, { color: colors.textSecondary }]}>›</Text>
+                <Icon name="header.forward" size={16} color={colors.icon} />
             )}
         </Pressable>
     );
@@ -94,12 +100,9 @@ export default function ProfileScreen() {
     const [themeSheetVisible, setThemeSheetVisible] = useState(false);
     const [colorSheetVisible, setColorSheetVisible] = useState(false);
 
-    // Device ID tail for footer (last 8 chars, safe to show)
     const deviceId = deviceUser?.id ?? '';
     const deviceIdTail = deviceId.length > 8 ? deviceId.slice(-8) : deviceId;
     const appVersion = '1.0.0';
-
-    // ── Handlers ─────────────────────────────────────────────────────────────
 
     const handleSaveName = useCallback(async () => {
         const trimmed = nameInput.trim();
@@ -138,13 +141,10 @@ export default function ProfileScreen() {
     const handleClearData = useCallback(() => {
         Alert.alert(
             'Clear Local Data?',
-            'This removes all cached data from this device. Your data on Supabase is unaffected. You can re-sync by opening each group.',
+            'This removes all cached data from this device. Your data on Supabase is unaffected.',
             [
                 { text: 'Cancel', style: 'cancel' },
-                {
-                    text: 'Clear', style: 'destructive',
-                    onPress: () => { /* TODO: clear all Zustand stores */ },
-                },
+                { text: 'Clear', style: 'destructive', onPress: () => { /* TODO */ } },
             ],
         );
     }, []);
@@ -155,20 +155,13 @@ export default function ProfileScreen() {
             'You will need to re-enter your name. All local data will be cleared.',
             [
                 { text: 'Cancel', style: 'cancel' },
-                {
-                    text: 'Log Out', style: 'destructive',
-                    onPress: () => { /* TODO: useAuthStore.getState().signOut() */ },
-                },
+                { text: 'Log Out', style: 'destructive', onPress: () => { /* TODO */ } },
             ],
         );
     }, []);
 
-    // ── Derived display values ────────────────────────────────────────────────
-
     const themeLabel = THEME_OPTIONS.find((t) => t.value === preference)?.label ?? '—';
     const accentPreset = ACCENT_PRESETS.find((p) => p.id === accentId);
-
-    // ── Render ────────────────────────────────────────────────────────────────
 
     return (
         <SafeAreaView style={[styles.root, { backgroundColor: colors.bg }]} edges={['top', 'left', 'right']}>
@@ -199,7 +192,10 @@ export default function ProfileScreen() {
                             )}
                         </View>
                     ) : (
-                        <Pressable onPress={() => { setNameInput(deviceUser?.displayName ?? ''); setEditingName(true); }} hitSlop={8}>
+                        <Pressable
+                            onPress={() => { setNameInput(deviceUser?.displayName ?? ''); setEditingName(true); }}
+                            hitSlop={8}
+                        >
                             <Text style={[typography.title, { color: colors.textInverse, marginTop: spacing.sm }]}>
                                 {deviceUser?.displayName ?? 'Set your name'}
                             </Text>
@@ -213,17 +209,9 @@ export default function ProfileScreen() {
                 {/* ── Preferences ──────────────────────────────────────── */}
                 <View style={[styles.section, { backgroundColor: colors.surface }]}>
                     <Text style={[styles.sectionTitle, { color: colors.textSecondary }]}>PREFERENCES</Text>
-                    <SettingsRow
-                        label="Theme"
-                        value={themeLabel}
-                        onPress={() => setThemeSheetVisible(true)}
-                    />
+                    <SettingsRow label="Theme" value={themeLabel} onPress={() => setThemeSheetVisible(true)} />
                     <Divider inset />
-                    <SettingsRow
-                        label="Accent Color"
-                        value={accentPreset?.label}
-                        onPress={() => setColorSheetVisible(true)}
-                    />
+                    <SettingsRow label="Accent Color" value={accentPreset?.label} onPress={() => setColorSheetVisible(true)} />
                 </View>
 
                 {/* ── Account ──────────────────────────────────────────── */}
@@ -250,17 +238,25 @@ export default function ProfileScreen() {
                 {THEME_OPTIONS.map((opt, i) => (
                     <View key={opt.value}>
                         <Pressable
-                            style={[styles.sheetOption, preference === opt.value && { backgroundColor: colors.accentLight }]}
+                            style={[
+                                styles.sheetOption,
+                                preference === opt.value && { backgroundColor: colors.accentLight },
+                            ]}
                             onPress={() => handleThemeSelect(opt.value)}
                             accessibilityRole="radio"
                             accessibilityState={{ selected: preference === opt.value }}
                         >
+                            <Icon
+                                name={opt.iconKey}
+                                size={22}
+                                color={preference === opt.value ? colors.accent : colors.icon}
+                            />
                             <View style={styles.sheetOptionText}>
                                 <Text style={[typography.bodyMd, { color: colors.text }]}>{opt.label}</Text>
                                 <Text style={[typography.caption, { color: colors.textSecondary }]}>{opt.description}</Text>
                             </View>
                             {preference === opt.value && (
-                                <Text style={[typography.bodyMd, { color: colors.accent }]}>✓</Text>
+                                <Icon name="action.checkCircle" active size={20} color={colors.accent} />
                             )}
                         </Pressable>
                         {i < THEME_OPTIONS.length - 1 && <Divider inset />}
@@ -288,7 +284,9 @@ export default function ProfileScreen() {
                                 accessibilityLabel={`${preset.label} accent color`}
                             >
                                 <Text style={[typography.label, { color: preset.contrast }]}>{preset.label}</Text>
-                                {isSelected && <Text style={{ color: preset.contrast }}>✓</Text>}
+                                {isSelected && (
+                                    <Icon name="action.check" size={14} color={preset.contrast} />
+                                )}
                             </Pressable>
                         );
                     })}
@@ -298,11 +296,8 @@ export default function ProfileScreen() {
     );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
     root: { flex: 1 },
-
     hero: {
         alignItems: 'center',
         paddingVertical: spacing.xl,
@@ -323,7 +318,6 @@ const styles = StyleSheet.create({
         minWidth: 120,
         textAlign: 'center',
     },
-
     section: {
         marginTop: spacing.md,
         borderRadius: radii.lg,
@@ -336,7 +330,6 @@ const styles = StyleSheet.create({
         paddingTop: spacing.md,
         paddingBottom: spacing.sm,
     },
-
     row: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -344,15 +337,16 @@ const styles = StyleSheet.create({
         paddingHorizontal: spacing.md,
         paddingVertical: spacing.md,
     },
+    rowRight: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: spacing.xs,
+    },
     rowPressed: { opacity: 0.6 },
-    chevron: { fontSize: 20, fontWeight: '300' },
-
     footer: {
         paddingTop: spacing.xl,
         paddingBottom: spacing.md,
     },
-
-    // Sheet
     sheetTitle: {
         ...typography.title,
         marginBottom: spacing.md,
@@ -361,13 +355,12 @@ const styles = StyleSheet.create({
     sheetOption: {
         flexDirection: 'row',
         alignItems: 'center',
-        justifyContent: 'space-between',
+        gap: spacing.md,
         paddingVertical: spacing.md,
         paddingHorizontal: spacing.sm,
         borderRadius: radii.md,
     },
-    sheetOptionText: { gap: 2 },
-
+    sheetOptionText: { flex: 1, gap: 2 },
     colorGrid: {
         flexDirection: 'row',
         flexWrap: 'wrap',

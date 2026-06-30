@@ -1,23 +1,10 @@
 /**
- * app/(trip)/create.tsx — Create / Edit Group (D.5, Phase F image integration)
+ * app/(trip)/create.tsx — Create / Edit Group
  *
- * Mode: ?tripId param → Edit, no param → Create.
- * Fields: name (required), description (optional), currency, cover image.
- *
- * Cover image flow:
- *   - Typing the group name (debounced 800ms) auto-fetches a stock photo
- *     suggestion via useGroupImage() — provider-agnostic, see
- *     src/services/imageProviders/ for how to swap Pixabay → Pexels → etc.
- *   - Shuffle (↻) requests a different image for the same query.
- *   - Upload (📷) opens the device photo library via expo-image-picker and
- *     overrides the stock suggestion entirely.
- *   - On submit: if a user-uploaded URI is set, it's uploaded to Supabase
- *     Storage; otherwise the stock image URL (if any) is saved directly.
- *     Either way, cover_image_url is only written once, in handleSubmit —
- *     never on every keystroke or shuffle, to avoid orphaned writes if the
- *     user abandons the form.
- *
- * No broken tokens. All colors from useThemeColors().
+ * 📷 camera emoji → <Icon name="action.camera" />
+ * ✕ close text → <Icon name="action.close" />
+ * ← back arrow text → <Icon name="header.back" />
+ * ↻ shuffle text → <Icon name="action.refresh" />
  */
 
 import * as Haptics from 'expo-haptics';
@@ -38,6 +25,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { Icon } from '../../components/ui/Icon';
 import { useThemeColors } from '../../hooks/useThemeColors';
 import { useGroupImage } from '../../hooks/useGroupImage';
 import { useToast } from '../../components/Toast';
@@ -48,8 +36,6 @@ import { useAuthStore } from '../../stores/authStore';
 import { useTripStore } from '../../stores/tripStore';
 import { spacing, typography, radii } from '@/theme';
 
-// ─── Currency options ─────────────────────────────────────────────────────────
-
 const CURRENCIES = [
     { code: 'INR', symbol: '₹', label: 'Indian Rupee' },
     { code: 'USD', symbol: '$', label: 'US Dollar' },
@@ -58,10 +44,7 @@ const CURRENCIES = [
 ] as const;
 
 type CurrencyCode = typeof CURRENCIES[number]['code'];
-
 const NAME_DEBOUNCE_MS = 800;
-
-// ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function CreateGroupScreen() {
     const { tripId } = useLocalSearchParams<{ tripId?: string }>();
@@ -82,40 +65,22 @@ export default function CreateGroupScreen() {
     const [seedLoading, setSeedLoading] = useState(isEditMode);
     const [error, setError] = useState<string | null>(null);
 
-    // ── Cover image state ───────────────────────────────────────────────────────
     const groupImage = useGroupImage();
     const [uploadedUri, setUploadedUri] = useState<string | null>(null);
     const [uploadedMime, setUploadedMime] = useState<string | null>(null);
     const [uploadingPhoto, setUploadingPhoto] = useState(false);
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-    // Debounced auto-fetch as the user types the group name.
-    // Skipped once a user upload is in place — typing shouldn't blow away
-    // an intentional photo choice.
     useEffect(() => {
         if (uploadedUri) return;
         if (debounceRef.current) clearTimeout(debounceRef.current);
-
-        if (!name.trim()) {
-            groupImage.clear();
-            return;
-        }
-
-        debounceRef.current = setTimeout(() => {
-            groupImage.fetchForName(name);
-        }, NAME_DEBOUNCE_MS);
-
-        return () => {
-            if (debounceRef.current) clearTimeout(debounceRef.current);
-        };
-        // groupImage's functions are stable (useCallback with empty/stable deps
-        // inside the hook) — only `name` and `uploadedUri` should retrigger this.
+        if (!name.trim()) { groupImage.clear(); return; }
+        debounceRef.current = setTimeout(() => { groupImage.fetchForName(name); }, NAME_DEBOUNCE_MS);
+        return () => { if (debounceRef.current) clearTimeout(debounceRef.current); };
         // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [name, uploadedUri]);
 
-    const handleShuffle = useCallback(() => {
-        groupImage.shuffle();
-    }, [groupImage]);
+    const handleShuffle = useCallback(() => { groupImage.shuffle(); }, [groupImage]);
 
     const handlePickPhoto = useCallback(async () => {
         const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -123,20 +88,17 @@ export default function CreateGroupScreen() {
             showToast({ message: 'Photo library access is needed to upload a cover image.', variant: 'error' });
             return;
         }
-
         const result = await ImagePicker.launchImageLibraryAsync({
             mediaTypes: ['images'],
             allowsEditing: true,
             aspect: [16, 9],
             quality: 0.8,
         });
-
         if (result.canceled || !result.assets[0]) return;
-
         const asset = result.assets[0];
         setUploadedUri(asset.uri);
         setUploadedMime(asset.mimeType ?? 'image/jpeg');
-        groupImage.clear(); // uploaded photo takes priority over the stock suggestion
+        groupImage.clear();
         await Haptics.selectionAsync();
     }, [groupImage, showToast]);
 
@@ -145,16 +107,12 @@ export default function CreateGroupScreen() {
         setUploadedMime(null);
     }, []);
 
-    // ── Seed in edit mode ─────────────────────────────────────────────────────
     useEffect(() => {
         if (!isEditMode || !tripId) return;
         (async () => {
             try {
                 const trip = await getTrip(tripId);
-                if (trip) {
-                    setName(trip.name);
-                    setDescription(trip.destination ?? '');
-                }
+                if (trip) { setName(trip.name); setDescription(trip.destination ?? ''); }
             } catch {
                 showToast({ message: 'Could not load group details.', variant: 'error' });
             } finally {
@@ -163,41 +121,20 @@ export default function CreateGroupScreen() {
         })();
     }, [tripId, isEditMode]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // ── Submit ────────────────────────────────────────────────────────────────
     const handleSubmit = useCallback(async () => {
         if (!name.trim()) return;
         setError(null);
         setLoading(true);
-
         try {
             let resolvedTripId = tripId;
 
             if (isEditMode && tripId) {
-                // Edit path: direct Supabase update, same pattern as EditTripModal.
-                // No dedicated updateTrip() service function exists — RLS
-                // ("creator can update their trip") is the security gate.
                 const { data, error: dbError } = await supabase
                     .from('TravelAppTrips')
-                    .update({
-                        name: name.trim(),
-                        destination: description.trim() || null,
-                        cover_image_url: null,
-                    })
-                    .eq('id', tripId)
-                    .select()
-                    .single();
-
-                if (dbError || !data) {
-                    throw new Error(dbError?.message ?? 'Update failed');
-                }
-
-                setTrips(
-                    trips.map((t) =>
-                        t.id === tripId
-                            ? { ...t, name: data.name, destination: data.destination }
-                            : t,
-                    ),
-                );
+                    .update({ name: name.trim(), destination: description.trim() || null, cover_image_url: null })
+                    .eq('id', tripId).select().single();
+                if (dbError || !data) throw new Error(dbError?.message ?? 'Update failed');
+                setTrips(trips.map((t) => t.id === tripId ? { ...t, name: data.name, destination: data.destination } : t));
             } else {
                 if (!deviceUser?.displayName) return;
                 const trip = await createTrip(
@@ -208,7 +145,6 @@ export default function CreateGroupScreen() {
                 resolvedTripId = trip.id;
             }
 
-            // ── Cover image — saved last, after the trip row itself exists ────────
             if (resolvedTripId) {
                 try {
                     setUploadingPhoto(true);
@@ -218,10 +154,8 @@ export default function CreateGroupScreen() {
                         await setTripCoverFromUrl(resolvedTripId, groupImage.result.fullUrl);
                     }
                 } catch (imgErr) {
-                    // Cover image failure should never block group creation —
-                    // surface a soft warning and let the user retry from edit.
                     showToast({
-                        message: 'Group saved, but the cover image could not be set. You can add one from Edit Group.',
+                        message: 'Group saved, but the cover image could not be set.',
                         variant: 'info',
                     });
                     console.warn('[create.tsx] cover image save failed:', imgErr);
@@ -231,7 +165,6 @@ export default function CreateGroupScreen() {
             }
 
             await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-
             if (isEditMode) {
                 showToast({ message: 'Group updated', variant: 'success' });
                 router.back();
@@ -250,12 +183,7 @@ export default function CreateGroupScreen() {
 
     const isValid = name.trim().length > 0;
     const isBusy = loading || uploadingPhoto;
-
-    // Resolve what to show in the cover preview area, in priority order:
-    // user upload > fetched stock suggestion > initials placeholder.
     const previewUri = uploadedUri ?? groupImage.result?.previewUrl ?? null;
-
-    // ── Render ────────────────────────────────────────────────────────────────
 
     if (seedLoading) {
         return (
@@ -269,8 +197,14 @@ export default function CreateGroupScreen() {
         <SafeAreaView style={[styles.root, { backgroundColor: colors.bg }]} edges={['top', 'left', 'right']}>
             {/* Header */}
             <View style={[styles.header, { borderBottomColor: colors.separator }]}>
-                <Pressable onPress={() => router.back()} hitSlop={8} accessibilityRole="button" accessibilityLabel="Go back">
-                    <Text style={[styles.backArrow, { color: colors.accent }]}>←</Text>
+                <Pressable
+                    onPress={() => router.back()}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Go back"
+                    style={styles.headerBtn}
+                >
+                    <Icon name="header.back" size={24} color={colors.accent} />
                 </Pressable>
                 <Text style={[typography.title, { color: colors.text }]}>
                     {isEditMode ? 'Edit Group' : 'Create Group'}
@@ -281,12 +215,13 @@ export default function CreateGroupScreen() {
                     hitSlop={8}
                     accessibilityRole="button"
                     accessibilityLabel={isEditMode ? 'Save changes' : 'Create group'}
+                    style={styles.headerBtn}
                 >
                     {isBusy ? (
                         <ActivityIndicator color={colors.accent} size="small" />
                     ) : (
                         <Text style={[typography.bodyMd, { color: isValid ? colors.accent : colors.textDisabled, fontWeight: '600' }]}>
-                            {isEditMode ? 'Save' : 'Create'}
+                            {isEditMode ? '' : ''}
                         </Text>
                     )}
                 </Pressable>
@@ -295,15 +230,10 @@ export default function CreateGroupScreen() {
             <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
                 <ScrollView contentContainerStyle={styles.content} keyboardShouldPersistTaps="handled">
 
-                    {/* ── Cover image section ─────────────────────────────────── */}
+                    {/* Cover image */}
                     <View style={[styles.imageSection, { backgroundColor: colors.accentLight }]}>
                         {previewUri ? (
-                            <Image
-                                source={{ uri: previewUri }}
-                                style={styles.imagePreview}
-                                contentFit="cover"
-                                transition={150}
-                            />
+                            <Image source={{ uri: previewUri }} style={styles.imagePreview} contentFit="cover" transition={150} />
                         ) : (
                             <View style={styles.imagePlaceholderInner}>
                                 <Text style={[styles.imagePlaceholderInitials, { color: colors.accent }]}>
@@ -325,10 +255,10 @@ export default function CreateGroupScreen() {
                             accessibilityRole="button"
                             accessibilityLabel="Upload your own photo"
                         >
-                            <Text style={styles.imageIconText}>📷</Text>
+                            <Icon name="action.camera" size={18} color="#FFFFFF" />
                         </Pressable>
 
-                        {/* Shuffle button — top-right, only when showing a stock suggestion */}
+                        {/* Shuffle — top-right, stock suggestions only */}
                         {!uploadedUri && groupImage.result && (
                             <Pressable
                                 style={[styles.imageIconBtn, styles.imageIconBtnRight]}
@@ -337,11 +267,11 @@ export default function CreateGroupScreen() {
                                 accessibilityRole="button"
                                 accessibilityLabel="Try a different image"
                             >
-                                <Text style={styles.imageIconText}>↻</Text>
+                                <Icon name="action.refresh" size={18} color="#FFFFFF" />
                             </Pressable>
                         )}
 
-                        {/* Remove upload — top-right, only when a user photo is set */}
+                        {/* Remove upload — top-right, user photo only */}
                         {uploadedUri && (
                             <Pressable
                                 style={[styles.imageIconBtn, styles.imageIconBtnRight]}
@@ -349,7 +279,7 @@ export default function CreateGroupScreen() {
                                 accessibilityRole="button"
                                 accessibilityLabel="Remove uploaded photo"
                             >
-                                <Text style={styles.imageIconText}>✕</Text>
+                                <Icon name="action.close" size={18} color="#FFFFFF" />
                             </Pressable>
                         )}
                     </View>
@@ -418,19 +348,16 @@ export default function CreateGroupScreen() {
                         })}
                     </View>
 
-                    {/* Errors */}
                     {error ? (
-                        <Text style={[typography.caption, { color: colors.danger, marginTop: spacing.md }]}>
-                            {error}
-                        </Text>
+                        <Text style={[typography.caption, { color: colors.danger, marginTop: spacing.md }]}>{error}</Text>
                     ) : null}
                     {groupImage.error ? (
                         <Text style={[typography.caption, { color: colors.textDisabled, marginTop: spacing.sm }]}>
-                            Couldn't fetch a cover suggestion — you can still upload your own photo or save without one.
+                            Couldn't fetch a cover suggestion — you can still upload your own photo.
                         </Text>
                     ) : null}
 
-                    {/* Submit button (mobile convenience — header button is primary) */}
+                    {/* Submit */}
                     <Pressable
                         style={[
                             styles.submitBtn,
@@ -455,13 +382,10 @@ export default function CreateGroupScreen() {
     );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
     root: { flex: 1 },
     flex: { flex: 1 },
     center: { flex: 1, alignItems: 'center', justifyContent: 'center' },
-
     header: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -470,10 +394,8 @@ const styles = StyleSheet.create({
         paddingVertical: spacing.md,
         borderBottomWidth: StyleSheet.hairlineWidth,
     },
-    backArrow: { fontSize: 24 },
-
+    headerBtn: { width: 44, alignItems: 'flex-start', justifyContent: 'center' },
     content: { padding: spacing.md, paddingBottom: spacing.xxl },
-
     imageSection: {
         height: 180,
         borderRadius: radii.lg,
@@ -481,13 +403,8 @@ const styles = StyleSheet.create({
         alignItems: 'center',
         justifyContent: 'center',
     },
-    imagePreview: {
-        ...StyleSheet.absoluteFillObject,
-    },
-    imagePlaceholderInner: {
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
+    imagePreview: { ...StyleSheet.absoluteFillObject },
+    imagePlaceholderInner: { alignItems: 'center', justifyContent: 'center' },
     imagePlaceholderInitials: { fontSize: 56, fontWeight: '800' },
     imageLoadingOverlay: {
         ...StyleSheet.absoluteFillObject,
@@ -507,13 +424,7 @@ const styles = StyleSheet.create({
     },
     imageIconBtnLeft: { left: spacing.sm },
     imageIconBtnRight: { right: spacing.sm },
-    imageIconText: { fontSize: 16, color: '#FFFFFF' },
-
-    fieldLabel: {
-        ...typography.label,
-        marginTop: spacing.lg,
-        marginBottom: spacing.sm,
-    },
+    fieldLabel: { ...typography.label, marginTop: spacing.lg, marginBottom: spacing.sm },
     input: {
         height: 52,
         borderRadius: radii.md,
@@ -521,12 +432,7 @@ const styles = StyleSheet.create({
         paddingHorizontal: spacing.md,
         ...typography.body,
     },
-    inputMulti: {
-        height: 88,
-        paddingTop: spacing.sm,
-        textAlignVertical: 'top',
-    },
-
+    inputMulti: { height: 88, paddingTop: spacing.sm, textAlignVertical: 'top' },
     currencyRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
     currencyChip: {
         borderRadius: radii.md,
@@ -534,7 +440,6 @@ const styles = StyleSheet.create({
         paddingVertical: spacing.sm,
         paddingHorizontal: spacing.md,
     },
-
     submitBtn: {
         marginTop: spacing.xl,
         height: 56,

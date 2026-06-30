@@ -1,24 +1,40 @@
 /**
  * src/components/ui/EmptyState.tsx
  *
- * Full-area empty state. Every list screen must show this instead of blank void.
+ * Full-area empty state. Every list screen uses this instead of a blank void.
  *
- * Props:
- *   illustration — large emoji or icon character
- *   title        — primary message
- *   subtitle     — secondary explanation (optional)
- *   actionLabel  — CTA button label (optional)
- *   onAction     — CTA handler (optional)
+ * Props
+ * ─────
+ * iconKey     — semantic icon key from src/config/icons.ts rendered at 64px.
+ *               Defaults to "status.empty" (file-tray outline). To change the
+ *               glyph, edit icons.ts — never touch this file or call sites.
+ * title       — primary message (required)
+ * subtitle    — secondary explanation (optional)
+ * actionLabel — CTA button label (optional; requires onAction)
+ * onAction    — CTA handler (optional)
+ *
+ * Icons are always rendered in outline/inactive form here — they are
+ * decorative illustrations, not navigation affordances.
+ *
+ * MIGRATION NOTE
+ * The old `illustration` prop (emoji string) has been removed.
+ * Replace any remaining call sites:
+ *   Before: <EmptyState illustration="🏕️" ... />
+ *   After:  <EmptyState iconKey="nav.groups" ... />
  */
 
 import React from 'react';
 import { StyleSheet, Text, View } from 'react-native';
+
+import { Icon } from '@/components/ui/Icon';
+import type { IconKey } from '@/config/icons';
 import { useThemeColors } from '@/hooks/useThemeColors';
 import { Button } from './Button';
 import { typography, spacing } from '@/theme';
 
 interface EmptyStateProps {
-    illustration?: string;
+    /** Semantic icon key from src/config/icons.ts. Defaults to "status.empty". */
+    iconKey?: IconKey;
     title: string;
     subtitle?: string;
     actionLabel?: string;
@@ -26,7 +42,7 @@ interface EmptyStateProps {
 }
 
 function EmptyStateInner({
-    illustration = '🗂️',
+    iconKey = 'status.empty',
     title,
     subtitle,
     actionLabel,
@@ -36,7 +52,15 @@ function EmptyStateInner({
 
     return (
         <View style={styles.container}>
-            <Text style={styles.illustration}>{illustration}</Text>
+            <View style={styles.iconWrapper}>
+                <Icon
+                    name={iconKey}
+                    active={false}
+                    size={64}
+                    color={colors.icon}
+                    accessibilityLabel={title}
+                />
+            </View>
 
             <Text style={[typography.title, { color: colors.text, textAlign: 'center' }]}>
                 {title}
@@ -81,8 +105,7 @@ const styles = StyleSheet.create({
         paddingHorizontal: spacing.xl,
         paddingVertical: spacing.xxl,
     },
-    illustration: {
-        fontSize: 64,
+    iconWrapper: {
         marginBottom: spacing.md,
     },
     action: {

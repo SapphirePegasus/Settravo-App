@@ -1,8 +1,9 @@
 /**
  * app/(trip)/[tripId]/activity.tsx — Group Activity (D.10)
  *
- * Activity timeline scoped to one trip. Filter: All | Expenses | Settlements.
- * Same visual pattern as (tabs)/activity.tsx but no group picker needed.
+ * All emoji replaced:
+ *   illustration="📋" → iconKey="nav.activity" on EmptyState
+ *   "· ✓ Settled" text → "· Settled" with inline Icon
  */
 
 import { useLocalSearchParams } from 'expo-router';
@@ -13,6 +14,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { Avatar } from '../../../components/ui/Avatar';
 import { AmountText } from '../../../components/ui/AmountText';
 import { EmptyState } from '../../../components/ui/EmptyState';
+import { Icon } from '../../../components/ui/Icon';
 import { useThemeColors } from '../../../hooks/useThemeColors';
 import { useExpenses } from '../../../hooks/useExpenses';
 import { useMembers } from '../../../hooks/useMembers';
@@ -73,13 +75,6 @@ export default function TripActivityScreen() {
         }
 
         if (filter === 'all' || filter === 'settlements') {
-            // NOTE: Split has no `settledAt` timestamp in the current schema —
-            // only a boolean `isSettled`. We cannot show an accurate settlement
-            // date/time until the backend adds a settled_at column. As a
-            // reasonable proxy, we use the parent expense's createdAt so the
-            // item still appears in a sensible position on the timeline.
-            // TODO(backend): add settled_at timestamptz to TravelAppSplits,
-            // then replace `exp.createdAt` below with the real value.
             for (const exp of expenses) {
                 const expenseSplits = splits[exp.id] ?? [];
                 for (const sp of expenseSplits) {
@@ -125,7 +120,10 @@ export default function TripActivityScreen() {
                         accessibilityRole="radio"
                         accessibilityState={{ selected: filter === mode }}
                     >
-                        <Text style={[typography.caption, { color: filter === mode ? colors.textInverse : colors.textSecondary, fontWeight: '600' }]}>
+                        <Text style={[typography.caption, {
+                            color: filter === mode ? colors.textInverse : colors.textSecondary,
+                            fontWeight: '600',
+                        }]}>
                             {mode === 'all' ? 'ALL' : mode === 'expenses' ? 'EXPENSES' : 'SETTLEMENTS'}
                         </Text>
                     </Pressable>
@@ -150,9 +148,18 @@ export default function TripActivityScreen() {
                             <Text style={[typography.body, { color: colors.text }]}>
                                 <Text style={typography.bodyMd}>{item.actorName}</Text> {item.description}
                             </Text>
-                            <Text style={[typography.caption, { color: colors.textSecondary }]}>
-                                {formatTime(item.timestamp)} {item.kind === 'settlement' ? '· ✓ Settled' : ''}
-                            </Text>
+                            <View style={styles.metaRow}>
+                                <Text style={[typography.caption, { color: colors.textSecondary }]}>
+                                    {formatTime(item.timestamp)}
+                                </Text>
+                                {item.kind === 'settlement' && (
+                                    <>
+                                        <Text style={[typography.caption, { color: colors.textSecondary }]}> · </Text>
+                                        <Icon name="action.checkCircle" active size={12} color={colors.success} />
+                                        <Text style={[typography.caption, { color: colors.success }]}>Settled</Text>
+                                    </>
+                                )}
+                            </View>
                         </View>
                         {item.amountPaise != null && (
                             <AmountText paise={item.amountPaise} sign="neutral" size="sm" />
@@ -160,7 +167,11 @@ export default function TripActivityScreen() {
                     </View>
                 )}
                 ListEmptyComponent={
-                    <EmptyState illustration="📋" title="No activity yet" subtitle="Expenses and settlements for this trip will show here." />
+                    <EmptyState
+                        iconKey="nav.activity"
+                        title="No activity yet"
+                        subtitle="Expenses and settlements for this trip will show here."
+                    />
                 }
             />
         </SafeAreaView>
@@ -174,4 +185,5 @@ const styles = StyleSheet.create({
     listContent: { padding: spacing.md },
     row: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm, padding: spacing.md, borderRadius: radii.md, marginBottom: spacing.sm },
     rowInfo: { flex: 1, gap: 2 },
+    metaRow: { flexDirection: 'row', alignItems: 'center', gap: 3 },
 });

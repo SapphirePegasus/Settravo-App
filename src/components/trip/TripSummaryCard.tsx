@@ -2,13 +2,12 @@
  * src/components/trip/TripSummaryCard.tsx
  *
  * Shows total spend and settlement snapshot for a trip.
- * Tapping "Full settle plan →" navigates to the settle screen.
- *
- * Fix: removed colors.accentSuccess (didn't exist) → colors.success.
- * Fix: removed unused Member/Split imports.
+ * 🎉 emoji replaced with <Icon name="status.celebration" />.
  */
 
 import { Pressable, StyleSheet, Text, View } from 'react-native';
+
+import { Icon } from '../ui/Icon';
 import { useThemeColors } from '../../hooks/useThemeColors';
 import type { Expense, Settlement } from '../../types/domain';
 import { formatRupees } from '../../utils/money';
@@ -44,9 +43,12 @@ export function TripSummaryCard({ expenses, settlements, allSettled, onSettlePre
 
             {/* Settlement state */}
             {allSettled ? (
-                <Text style={[typography.bodyMd, { color: colors.success, textAlign: 'center', paddingVertical: spacing.xs }]}>
-                    All Settled! 🎉
-                </Text>
+                <View style={styles.allSettledRow}>
+                    <Icon name="status.celebration" size={20} color={colors.success} />
+                    <Text style={[typography.bodyMd, { color: colors.success }]}>
+                        All Settled!
+                    </Text>
+                </View>
             ) : preview.length > 0 ? (
                 <>
                     <Text style={[typography.label, { color: colors.textSecondary, marginBottom: spacing.sm }]}>
@@ -90,7 +92,12 @@ const styles = StyleSheet.create({
         height: StyleSheet.hairlineWidth,
         marginBottom: spacing.md,
     },
-    settleLink: {
-        marginTop: spacing.sm,
+    allSettledRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'center',
+        gap: spacing.sm,
+        paddingVertical: spacing.xs,
     },
+    settleLink: { marginTop: spacing.sm },
 });

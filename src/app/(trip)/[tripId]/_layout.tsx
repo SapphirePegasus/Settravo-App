@@ -23,6 +23,7 @@ export default function TripIdLayout() {
     const screenOptions = useMemo(
         () => ({
             headerStyle,
+            headerShown: false,
             headerTintColor: colors.text,
             headerShadowVisible: false,
             contentStyle: { backgroundColor: colors.bg },

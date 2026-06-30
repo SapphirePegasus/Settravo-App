@@ -2,32 +2,24 @@
  * src/components/TripCard.tsx
  *
  * Trip list card for the Home/Groups screens.
- * Shows emoji tile, name, destination, date range, member count, pending sync badge.
+ * Shows icon tile (hash-picked from TRIP_TILE_POOL), name, destination,
+ * date range, member count, pending sync badge.
  *
- * Fix: removed colors.accentWarning (didn't exist) → colors.warning + colors.warningMuted.
- * Fix: replaced hardcoded font sizes with typography tokens.
- * Fix: removed Platform.select shadow in favour of shadows.low token.
+ * All emoji replaced with <Icon /> components.
+ * Trip tile pool is configurable in src/config/icons.ts (TRIP_TILE_POOL).
  */
 
 import React from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
+import { Icon } from './ui/Icon';
+import { getTripTileIcon } from '../config/icons';
 import { useThemeColors } from '../hooks/useThemeColors';
 import { useMemberStore } from '../stores/memberStore';
 import type { Trip } from '../types/domain';
 import { typography, spacing, radii, shadows } from '@/theme';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
-
-const TRIP_EMOJIS = ['🏕️', '🏞️', '🛣️', '🏖️', '🏜️', '🏙️', '🌉', '🌅'] as const;
-
-function getTripEmoji(tripId: string): string {
-    let hash = 0;
-    for (let i = 0; i < tripId.length; i++) {
-        hash = tripId.charCodeAt(i) + ((hash << 5) - hash);
-    }
-    return TRIP_EMOJIS[Math.abs(hash) % TRIP_EMOJIS.length];
-}
 
 function formatDateRange(start: string | null, end: string | null): string | null {
     if (!start && !end) return null;
@@ -50,7 +42,7 @@ interface TripCardProps {
 
 function TripCardInner({ trip, pendingSyncCount, onPress }: TripCardProps) {
     const colors = useThemeColors();
-    const emoji = getTripEmoji(trip.id);
+    const tileIcon = getTripTileIcon(trip.id);
     const dateLabel = formatDateRange(trip.startDate, trip.endDate);
     const memberCount = useMemberStore((s) => (s.members[trip.id] ?? []).length);
 
@@ -70,9 +62,13 @@ function TripCardInner({ trip, pendingSyncCount, onPress }: TripCardProps) {
             accessibilityLabel={`Open trip: ${trip.name}`}
         >
             <View style={styles.inner}>
-                {/* Emoji tile */}
-                <View style={[styles.emojiBox, { backgroundColor: colors.emojiBox }]}>
-                    <Text style={styles.emojiText}>{emoji}</Text>
+                {/* Tile icon — hash-picked, configurable in icons.ts */}
+                <View style={[styles.iconBox, { backgroundColor: colors.emojiBox }]}>
+                    <Icon
+                        name={tileIcon}
+                        size={26}
+                        color={colors.accent}
+                    />
                 </View>
 
                 {/* Info */}
@@ -82,37 +78,45 @@ function TripCardInner({ trip, pendingSyncCount, onPress }: TripCardProps) {
                     </Text>
 
                     {trip.destination ? (
-                        <Text style={[typography.caption, { color: colors.textSecondary }]} numberOfLines={1}>
-                            📍 {trip.destination}
-                        </Text>
+                        <View style={styles.metaRow}>
+                            <Icon name="nav.place" size={12} color={colors.textSecondary} />
+                            <Text style={[typography.caption, { color: colors.textSecondary }]} numberOfLines={1}>
+                                {trip.destination}
+                            </Text>
+                        </View>
                     ) : null}
 
                     {dateLabel ? (
-                        <Text style={[typography.caption, { color: colors.textSecondary }]}>
-                            🗓 {dateLabel}
-                        </Text>
+                        <View style={styles.metaRow}>
+                            <Icon name="nav.calendar" size={12} color={colors.textSecondary} />
+                            <Text style={[typography.caption, { color: colors.textSecondary }]}>
+                                {dateLabel}
+                            </Text>
+                        </View>
                     ) : null}
 
                     {/* Badges */}
                     <View style={styles.badgeRow}>
                         {memberCount > 0 && (
                             <View style={[styles.badge, { backgroundColor: colors.subSurface }]}>
+                                <Icon name="nav.groups" size={11} color={colors.textSecondary} />
                                 <Text style={[typography.label, { color: colors.textSecondary }]}>
-                                    👥 {memberCount}
+                                    {memberCount}
                                 </Text>
                             </View>
                         )}
                         {pendingSyncCount > 0 && (
                             <View style={[styles.badge, { backgroundColor: colors.warningMuted }]}>
+                                <Icon name="status.syncing" size={11} color={colors.warning} />
                                 <Text style={[typography.label, { color: colors.warning }]}>
-                                    ⏳ {pendingSyncCount} PENDING
+                                    {pendingSyncCount} PENDING
                                 </Text>
                             </View>
                         )}
                     </View>
                 </View>
 
-                <Text style={[styles.chevron, { color: colors.textSecondary }]}>›</Text>
+                <Icon name="header.forward" size={20} color={colors.textSecondary} />
             </View>
         </Pressable>
     );
@@ -140,7 +144,7 @@ const styles = StyleSheet.create({
         padding: spacing.md,
         gap: spacing.md,
     },
-    emojiBox: {
+    iconBox: {
         width: 52,
         height: 52,
         borderRadius: radii.md,
@@ -148,13 +152,15 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
         flexShrink: 0,
     },
-    emojiText: { fontSize: 26 },
-    info: { flex: 1, minWidth: 0, gap: 2 },
-    badgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 4 },
+    info: { flex: 1, minWidth: 0, gap: 3 },
+    metaRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+    badgeRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 2 },
     badge: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 3,
         borderRadius: radii.xs,
         paddingHorizontal: spacing.sm,
         paddingVertical: 2,
     },
-    chevron: { fontSize: 22, fontWeight: '300', flexShrink: 0 },
 });

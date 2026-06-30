@@ -4,10 +4,16 @@
  * Selectable filter/category pill.
  * Selected state: accent background + white text.
  * Unselected state: card background + muted border.
+ *
+ * MIGRATION: `icon` prop (emoji string) replaced with `iconKey` (IconKey).
+ * To change a chip icon, edit src/config/icons.ts — never touch this file.
  */
 
 import React from 'react';
-import { Pressable, StyleSheet, Text } from 'react-native';
+import { Pressable, StyleSheet, Text, View } from 'react-native';
+
+import { Icon } from '@/components/ui/Icon';
+import type { IconKey } from '@/config/icons';
 import { useThemeColors } from '@/hooks/useThemeColors';
 import { typography, radii, spacing } from '@/theme';
 
@@ -15,12 +21,14 @@ interface ChipProps {
     label: string;
     selected: boolean;
     onPress: () => void;
-    icon?: string;  // optional leading emoji/icon
+    /** Semantic icon key from src/config/icons.ts. Optional leading icon. */
+    iconKey?: IconKey;
     accessibilityLabel?: string;
 }
 
-function ChipInner({ label, selected, onPress, icon, accessibilityLabel }: ChipProps) {
+function ChipInner({ label, selected, onPress, iconKey, accessibilityLabel }: ChipProps) {
     const colors = useThemeColors();
+    const iconColor = selected ? colors.textInverse : colors.textSecondary;
 
     return (
         <Pressable
@@ -37,7 +45,14 @@ function ChipInner({ label, selected, onPress, icon, accessibilityLabel }: ChipP
             accessibilityState={{ checked: selected }}
             accessibilityLabel={accessibilityLabel ?? label}
         >
-            {icon ? <Text style={styles.icon}>{icon}</Text> : null}
+            {iconKey ? (
+                <Icon
+                    name={iconKey}
+                    active={selected}
+                    size={16}
+                    color={iconColor}
+                />
+            ) : null}
             <Text
                 style={[
                     typography.bodyMd,
@@ -62,5 +77,4 @@ const styles = StyleSheet.create({
         paddingVertical: spacing.sm,
         paddingHorizontal: spacing.md,
     },
-    icon: { fontSize: 16 },
 });

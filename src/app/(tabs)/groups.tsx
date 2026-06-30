@@ -1,8 +1,12 @@
 /**
- * app/(tabs)/groups.tsx — Groups Tab — Phase D.3
+ * app/(tabs)/groups.tsx — Groups Tab
  *
  * Full flat list of all trips with search filter.
- * No hero. Same TripCard as Dashboard.
+ *
+ * Design delta fixes applied in this revision:
+ *   - Search bar now has a leading <Icon> instead of a bare TextInput.
+ *   - Both EmptyState call sites use iconKey (no emoji illustration prop).
+ *   - Icon import added; no emoji used anywhere in this file.
  */
 
 import * as Haptics from 'expo-haptics';
@@ -21,6 +25,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 
 import { TripCard } from '../../components/TripCard';
 import { EmptyState } from '../../components/ui/EmptyState';
+import { Icon } from '../../components/ui/Icon';
 import { useThemeColors } from '../../hooks/useThemeColors';
 import { useTrips } from '../../hooks/useTrips';
 import { useTripStore } from '../../stores/tripStore';
@@ -77,33 +82,42 @@ export default function GroupsScreen() {
             style={[styles.root, { backgroundColor: colors.bg }]}
             edges={['top', 'left', 'right']}
         >
-            {/* Header */}
+            {/* ── Header ─────────────────────────────────────────────── */}
             <View style={styles.header}>
                 <Text style={[typography.heading, { color: colors.text }]}>Groups</Text>
             </View>
 
-            {/* Search */}
-            <View style={[styles.searchRow, { backgroundColor: colors.surface }]}>
-                <TextInput
+            {/* ── Search bar with leading icon ─────────────────────── */}
+            <View style={styles.searchRow}>
+                <View
                     style={[
-                        styles.searchInput,
+                        styles.searchInputWrap,
                         {
                             backgroundColor: colors.subSurface,
-                            color: colors.text,
                             borderColor: colors.cardBorder,
                         },
                     ]}
-                    placeholder="Search groups..."
-                    placeholderTextColor={colors.placeholder}
-                    value={query}
-                    onChangeText={setQuery}
-                    returnKeyType="search"
-                    clearButtonMode="while-editing"
-                    accessibilityLabel="Search groups"
-                />
+                >
+                    <Icon
+                        name="header.search"
+                        size={18}
+                        color={colors.icon}
+                        style={styles.searchIcon}
+                    />
+                    <TextInput
+                        style={[styles.searchInput, { color: colors.text }]}
+                        placeholder="Search groups..."
+                        placeholderTextColor={colors.placeholder}
+                        value={query}
+                        onChangeText={setQuery}
+                        returnKeyType="search"
+                        clearButtonMode="while-editing"
+                        accessibilityLabel="Search groups"
+                    />
+                </View>
             </View>
 
-            {/* List */}
+            {/* ── List ────────────────────────────────────────────────── */}
             <FlatList
                 data={filtered}
                 keyExtractor={(item) => item.id}
@@ -115,9 +129,13 @@ export default function GroupsScreen() {
                 ListEmptyComponent={
                     isLoading ? null : (
                         <EmptyState
-                            illustration={query ? '🔍' : '🏕️'}
+                            iconKey={query ? 'header.search' : 'nav.groups'}
                             title={query ? 'No groups match' : 'No groups yet'}
-                            subtitle={query ? 'Try a different search term.' : 'Create or join a group to get started.'}
+                            subtitle={
+                                query
+                                    ? 'Try a different search term.'
+                                    : 'Create or join a group to get started.'
+                            }
                         />
                     )
                 }
@@ -138,15 +156,35 @@ export default function GroupsScreen() {
 
 const styles = StyleSheet.create({
     root: { flex: 1 },
-    header: { paddingHorizontal: spacing.md, paddingTop: spacing.md, paddingBottom: spacing.sm },
-    searchRow: { paddingHorizontal: spacing.md, paddingBottom: spacing.sm },
-    searchInput: {
+    header: {
+        paddingHorizontal: spacing.md,
+        paddingTop: spacing.md,
+        paddingBottom: spacing.sm,
+    },
+
+    // Search
+    searchRow: {
+        paddingHorizontal: spacing.md,
+        paddingBottom: spacing.sm,
+    },
+    searchInputWrap: {
+        flexDirection: 'row',
+        alignItems: 'center',
         height: 44,
         borderRadius: radii.md,
         borderWidth: 1,
-        paddingHorizontal: spacing.md,
+        paddingHorizontal: spacing.sm,
+    },
+    searchIcon: {
+        marginRight: spacing.xs,
+    },
+    searchInput: {
+        flex: 1,
+        height: '100%',
         ...typography.body,
     },
+
+    // List
     listContent: { padding: spacing.md, paddingTop: spacing.sm },
     listEmpty: { flex: 1 },
 });

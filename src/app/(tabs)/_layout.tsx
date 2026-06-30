@@ -30,22 +30,29 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { FEATURES } from '@/config/features';
 import { useThemeColors } from '@/hooks/useThemeColors';
 import { FABSheet } from '@/components/modals/FABSheet';
-import { spacing, radii, shadows } from '@/theme';
+import { Icon } from '@/components/ui/Icon';
+import type { IconKey } from '@/config/icons';
+import { spacing, typography } from '@/theme';
 
 // ─── Tab icon renderer ────────────────────────────────────────────────────────
+// Icon + label, both tinted by React Navigation's tabBarActiveTintColor /
+// tabBarInactiveTintColor (set on screenOptions below — accent green when
+// active, muted icon color when inactive). The glyph itself also swaps to
+// the filled variant on active state via <Icon active={focused} />, per the
+// outline -> filled convention used throughout the design mockup.
 
 type TabIconProps = {
-    emoji: string;
+    iconKey: IconKey;
     label: string;
     focused: boolean;
     color: string;
 };
 
-function TabIcon({ emoji, label, color }: TabIconProps) {
+function TabIcon({ iconKey, label, focused, color }: TabIconProps) {
     return (
         <View style={styles.tabIconContainer}>
-            <Text style={styles.tabEmoji}>{emoji}</Text>
-            <Text style={[styles.tabLabel, { color }]}>
+            <Icon name={iconKey} active={focused} size={22} color={color} />
+            <Text style={[styles.tabLabel, { color }]} numberOfLines={1}>
                 {label}
             </Text>
         </View>
@@ -64,14 +71,13 @@ function FABButton({ onPress, accentColor }: FABButtonProps) {
         <Pressable
             style={({ pressed }) => [
                 styles.fab,
-                { backgroundColor: accentColor },
                 pressed && styles.fabPressed,
             ]}
             onPress={onPress}
             accessibilityRole="button"
             accessibilityLabel="Create new group or expense"
         >
-            <Text style={styles.fabIcon}>+</Text>
+            <Icon name="action.add" active size={30} color={accentColor} />
         </Pressable>
     );
 }
@@ -91,6 +97,11 @@ export default function TabsLayout() {
     const handleFabDismiss = useCallback(() => {
         setFabVisible(false);
     }, []);
+
+    const handleJoinGroup = useCallback(() => {
+        setFabVisible(false);
+        router.push('/(trip)/join');
+    }, [router]);
 
     const handleCreateGroup = useCallback(() => {
         setFabVisible(false);
@@ -150,7 +161,7 @@ export default function TabsLayout() {
                 backgroundColor: colors.surface,
                 borderTopColor: colors.separator,
                 borderTopWidth: StyleSheet.hairlineWidth,
-                height: 56 + insets.bottom,
+                height: 64 + insets.bottom,
                 paddingBottom: insets.bottom,
             },
             tabBarShowLabel: false,
@@ -167,25 +178,25 @@ export default function TabsLayout() {
     // close this off completely.
     const renderHomeIcon = useCallback(
         ({ focused, color }: { focused: boolean; color: string }) => (
-            <TabIcon emoji="🏠" label="Home" focused={focused} color={color} />
+            <TabIcon iconKey="nav.home" label="Home" focused={focused} color={color} />
         ),
         [],
     );
     const renderGroupsIcon = useCallback(
         ({ focused, color }: { focused: boolean; color: string }) => (
-            <TabIcon emoji="👥" label="Groups" focused={focused} color={color} />
+            <TabIcon iconKey="nav.groups" label="Groups" focused={focused} color={color} />
         ),
         [],
     );
     const renderActivityIcon = useCallback(
         ({ focused, color }: { focused: boolean; color: string }) => (
-            <TabIcon emoji="📋" label="Activity" focused={focused} color={color} />
+            <TabIcon iconKey="nav.activity" label="Activity" focused={focused} color={color} />
         ),
         [],
     );
     const renderStatisticsIcon = useCallback(
         ({ focused, color }: { focused: boolean; color: string }) => (
-            <TabIcon emoji="📊" label="Stats" focused={focused} color={color} />
+            <TabIcon iconKey="nav.statistics" label="Stats" focused={focused} color={color} />
         ),
         [],
     );
@@ -271,6 +282,7 @@ export default function TabsLayout() {
             <FABSheet
                 visible={fabVisible}
                 onDismiss={handleFabDismiss}
+                onJoinGroup={handleJoinGroup}
                 onCreateGroup={handleCreateGroup}
                 onCreateExpense={handleCreateExpense}
             />
@@ -284,33 +296,23 @@ const styles = StyleSheet.create({
     tabIconContainer: {
         alignItems: 'center',
         justifyContent: 'center',
-        paddingTop: spacing.xs,
-        gap: 2,
-    },
-    tabEmoji: {
-        fontSize: 20,
+        paddingTop: spacing.md,
+        gap: 3,
+        minWidth: 56,
     },
     tabLabel: {
+        ...typography.caption,
         fontSize: 10,
-        fontWeight: '500',
+        fontWeight: '600',
     },
     fab: {
-        width: 52,
-        height: 52,
-        borderRadius: radii.full,
+        //width: 48,
+        height: 48,
         alignItems: 'center',
         justifyContent: 'center',
-        marginBottom: spacing.xs,
-        ...shadows.high,
     },
     fabPressed: {
-        opacity: 0.85,
-        transform: [{ scale: 0.95 }],
-    },
-    fabIcon: {
-        fontSize: 28,
-        fontWeight: '300',
-        color: '#FFFFFF',
-        lineHeight: 32,
+        opacity: 0.7,
+        transform: [{ scale: 0.92 }],
     },
 });

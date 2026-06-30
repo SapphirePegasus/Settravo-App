@@ -1,24 +1,12 @@
 /**
- * app/(trip)/[tripId]/add-expense.tsx — Add / Edit Expense (D.7 Redesign)
+ * app/(trip)/[tripId]/add-expense.tsx — Add / Edit Expense
  *
- * Mode: expenseId param present → Edit, absent → Add.
- * Single screen, zero duplication, all business logic preserved from original.
- *
- * Redesign changes:
- *  - Replaced all broken token refs (accentDestructive→danger, inputBorder→cardBorder, etc.)
- *  - Replaced hardcoded '#fff' with colors.textInverse
- *  - Split progress bar uses ProgressBar component
- *  - Category chips use Chip component
- *  - Avatar in paidBy picker uses Avatar component
- *  - All hardcoded font sizes replaced with typography tokens
- *  - All hardcoded radii replaced with radii tokens
- *
- * Business logic unchanged:
- *  - Offline queue (ADD_EXPENSE / EDIT_EXPENSE)
- *  - Optimistic updates
- *  - Ownership guard for edit mode
- *  - Split validation (total must equal amount)
- *  - Delete with confirmation
+ * All emoji replaced:
+ *   CATEGORIES[].icon (emoji) → iconKey (IconKey) passed to <Chip iconKey />
+ *   🌐 offline banner → <Icon name="status.offline" />
+ *   ✓ split balanced → <Icon name="action.check" />
+ *   🗑 delete button → <Icon name="action.delete" />
+ *   👤 guest indicator → <Icon name="status.guest" />
  */
 
 import * as Crypto from 'expo-crypto';
@@ -41,6 +29,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { ConfirmModal } from '../../../components/modals/ConfirmModal';
 import { Avatar } from '../../../components/ui/Avatar';
 import { Chip } from '../../../components/ui/Chip';
+import { Icon } from '../../../components/ui/Icon';
 import { ProgressBar } from '../../../components/ui/ProgressBar';
 import { useToast } from '../../../components/Toast';
 import { useThemeColors } from '../../../hooks/useThemeColors';
@@ -55,17 +44,18 @@ import { useConnectionStore } from '../../../stores/connectionStore';
 import { useExpenseStore } from '../../../stores/expenseStore';
 import { useTripStore } from '../../../stores/tripStore';
 import type { ExpenseCategory, Split } from '../../../types/domain';
+import type { IconKey } from '../../../config/icons';
 import { formatRupees, parseRupeesToPaise, splitEvenly } from '../../../utils/money';
 import { validateSplitTotal } from '../../../validation/schemas';
 import { spacing, typography, radii } from '@/theme';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
-const CATEGORIES: { label: string; value: ExpenseCategory; icon: string }[] = [
-    { label: 'Food', value: 'food', icon: '🍽' },
-    { label: 'Transport', value: 'transport', icon: '🚗' },
-    { label: 'Stay', value: 'stay', icon: '🏨' },
-    { label: 'Misc', value: 'misc', icon: '📦' },
+const CATEGORIES: { label: string; value: ExpenseCategory; iconKey: IconKey }[] = [
+    { label: 'Food', value: 'food', iconKey: 'category.food' },
+    { label: 'Transport', value: 'transport', iconKey: 'category.transport' },
+    { label: 'Stay', value: 'stay', iconKey: 'category.stay' },
+    { label: 'Others', value: 'misc', iconKey: 'category.others' },
 ];
 
 const EMPTY_SPLITS: Split[] = [];
@@ -81,7 +71,6 @@ export default function AddExpenseScreen() {
 
     const isEditMode = Boolean(expenseId);
 
-    // ── Store selectors ───────────────────────────────────────────────────────
     const networkOnline = useConnectionStore((s) => s.networkOnline);
     const deviceUser = useAuthStore((s) => s.deviceUser);
     const addExpenseOptimistic = useExpenseStore((s) => s.addExpenseOptimistic);
@@ -100,7 +89,6 @@ export default function AddExpenseScreen() {
 
     const members = useMembers(tripId ?? '');
 
-    // ── Form state ────────────────────────────────────────────────────────────
     const [title, setTitle] = useState('');
     const [amountStr, setAmountStr] = useState('');
     const [category, setCategory] = useState<ExpenseCategory | null>(null);
@@ -111,17 +99,11 @@ export default function AddExpenseScreen() {
     const [error, setError] = useState<string | null>(null);
     const [deleteVisible, setDeleteVisible] = useState(false);
 
-    // ── Header title ──────────────────────────────────────────────────────────
-    // FIX: navigation excluded from deps — it is not referentially stable
-    // and setOptions() triggers state updates that would re-trigger this
-    // effect indefinitely if navigation were a dependency. Only isEditMode
-    // (a primitive) should re-trigger the title update.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     useEffect(() => {
         navigation.setOptions({ title: isEditMode ? 'Edit Expense' : 'Add Expense' });
     }, [isEditMode]);
 
-    // ── Seed form in edit mode ────────────────────────────────────────────────
     useEffect(() => {
         if (!isEditMode || !existingExpense) return;
         setTitle(existingExpense.title);
@@ -138,14 +120,12 @@ export default function AddExpenseScreen() {
         }
     }, [expenseId]); // eslint-disable-line react-hooks/exhaustive-deps
 
-    // ── Auto-select current user as payer ─────────────────────────────────────
     useEffect(() => {
         if (isEditMode || paidByMemberId || !deviceUser?.id) return;
         const mine = members.find((m) => m.deviceId === deviceUser.id);
         if (mine) setPaidByMemberId(mine.id);
     }, [isEditMode, members, deviceUser?.id, paidByMemberId]);
 
-    // ── Derived ───────────────────────────────────────────────────────────────
     const amountPaise = useMemo(() => parseRupeesToPaise(amountStr), [amountStr]);
 
     const equalSplits = useMemo((): Record<string, number> => {
@@ -177,7 +157,6 @@ export default function AddExpenseScreen() {
         (amountPaise === splitTotal),
     );
 
-    // ── Ownership guard (edit mode) ───────────────────────────────────────────
     const myMember = members.find((m) => m.deviceId === deviceUser?.id);
     if (isEditMode && existingExpense && myMember &&
         existingExpense.paidByMember !== myMember.id) {
@@ -190,7 +169,6 @@ export default function AddExpenseScreen() {
         );
     }
 
-    // ── Submit ────────────────────────────────────────────────────────────────
     const handleSubmit = useCallback(async () => {
         if (!tripId || !paidByMemberId || !amountPaise) return;
         setError(null);
@@ -199,7 +177,6 @@ export default function AddExpenseScreen() {
             memberId, shareMoney,
         }));
 
-        // Validate split total
         try {
             validateSplitTotal(splitEntries, amountPaise);
         } catch (err) {
@@ -207,7 +184,6 @@ export default function AddExpenseScreen() {
             return;
         }
 
-        // ── EDIT ─────────────────────────────────────────────────────────────
         if (isEditMode && existingExpense) {
             if (!networkOnline) {
                 await enqueueOfflineItem({
@@ -229,22 +205,11 @@ export default function AddExpenseScreen() {
                     { id: existingExpense.id, title: title.trim(), category, amountMoney: amountPaise, paidByMember: paidByMemberId },
                     { splits: splitEntries },
                 );
-                // Patch the expense directly in the store. We deliberately do NOT
-                // construct a fake RealtimePostgresChangesPayload here — that type
-                // requires schema/table/commit_timestamp/errors fields we don't have
-                // at this call site, and fabricating them is fragile. setExpenses()
-                // with a merged array is the correct, type-safe way to reflect this
-                // local mutation immediately; the real realtime UPDATE event (if it
-                // arrives) will harmlessly overwrite with the same data.
                 const currentList = useExpenseStore.getState().expenses[tripId] ?? [];
-                setExpensesInStore(
-                    tripId,
-                    currentList.map((e) => (e.id === updated.id ? updated : e)),
-                );
+                setExpensesInStore(tripId, currentList.map((e) => (e.id === updated.id ? updated : e)));
                 setSplitsInStore(updated.id, splitEntries.map((s, i) => ({
                     id: `${updated.id}-${i}`, expenseId: updated.id,
-                    memberId: s.memberId, shareMoney: s.shareMoney,
-                    isSettled: false,
+                    memberId: s.memberId, shareMoney: s.shareMoney, isSettled: false,
                 })));
                 await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
                 showToast({ message: 'Expense updated', variant: 'success' });
@@ -257,7 +222,6 @@ export default function AddExpenseScreen() {
             return;
         }
 
-        // ── ADD ──────────────────────────────────────────────────────────────
         const localId = Crypto.randomUUID();
         const nowIso = new Date().toISOString();
         const tempExpense = {
@@ -275,8 +239,6 @@ export default function AddExpenseScreen() {
                     tripId: tripId!, paidByMember: paidByMemberId!, title: title.trim(),
                     category, amountMoney: amountPaise!,
                 },
-                // `splits` is a sibling of `payload` on the ADD_EXPENSE variant,
-                // not nested inside it — see OfflineQueueItem in types/domain.ts.
                 splits: splitEntries,
             });
             showToast({ message: 'Expense saved — will sync when online', variant: 'info' });
@@ -307,7 +269,6 @@ export default function AddExpenseScreen() {
         enqueueOfflineItem, showToast, router,
     ]);
 
-    // ── Delete ────────────────────────────────────────────────────────────────
     const handleDelete = useCallback(async () => {
         if (!existingExpense || !tripId) return;
         setLoading(true);
@@ -324,7 +285,6 @@ export default function AddExpenseScreen() {
         }
     }, [existingExpense, tripId, showToast, router]);
 
-    // ── Render ────────────────────────────────────────────────────────────────
     return (
         <>
             <KeyboardAvoidingView
@@ -339,8 +299,9 @@ export default function AddExpenseScreen() {
                     {/* Offline banner */}
                     {!networkOnline && (
                         <View style={[styles.offlineBanner, { backgroundColor: colors.warningMuted }]}>
+                            <Icon name="status.offline" size={14} color={colors.warning} />
                             <Text style={[typography.caption, { color: colors.warning }]}>
-                                🌐 Offline — this {isEditMode ? 'change' : 'expense'} will sync when reconnected.
+                                Offline — this {isEditMode ? 'change' : 'expense'} will sync when reconnected.
                             </Text>
                         </View>
                     )}
@@ -382,7 +343,7 @@ export default function AddExpenseScreen() {
                             <Chip
                                 key={cat.value}
                                 label={cat.label}
-                                icon={cat.icon}
+                                iconKey={cat.iconKey}
                                 selected={category === cat.value}
                                 onPress={() => setCategory(category === cat.value ? null : cat.value)}
                             />
@@ -411,8 +372,15 @@ export default function AddExpenseScreen() {
                                 >
                                     <Avatar name={m.displayName} size={24} />
                                     <Text style={[typography.caption, { color: selected ? colors.textInverse : colors.text }]}>
-                                        {m.displayName}{m.isGuest ? ' 👤' : ''}
+                                        {m.displayName}
                                     </Text>
+                                    {m.isGuest && (
+                                        <Icon
+                                            name="status.guest"
+                                            size={12}
+                                            color={selected ? colors.textInverse : colors.icon}
+                                        />
+                                    )}
                                 </Pressable>
                             );
                         })}
@@ -447,11 +415,19 @@ export default function AddExpenseScreen() {
                     {amountPaise != null && amountPaise > 0 && (
                         <View style={styles.progressSection}>
                             <ProgressBar value={splitProgress} height={6} />
-                            <Text style={[typography.caption, { color: splitTotal === amountPaise ? colors.success : colors.textSecondary, marginTop: 4 }]}>
-                                {splitTotal === amountPaise
-                                    ? '✓ Split balanced'
-                                    : `Remaining: ${formatRupees(Math.abs(amountPaise - splitTotal))}`}
-                            </Text>
+                            <View style={styles.splitStatusRow}>
+                                {splitTotal === amountPaise ? (
+                                    <Icon name="action.check" size={13} color={colors.success} />
+                                ) : null}
+                                <Text style={[typography.caption, {
+                                    color: splitTotal === amountPaise ? colors.success : colors.textSecondary,
+                                    marginTop: 4,
+                                }]}>
+                                    {splitTotal === amountPaise
+                                        ? 'Split balanced'
+                                        : `Remaining: ${formatRupees(Math.abs(amountPaise - splitTotal))}`}
+                                </Text>
+                            </View>
                         </View>
                     )}
 
@@ -486,7 +462,6 @@ export default function AddExpenseScreen() {
                                 )}
                             </View>
                         ))}
-                        {/* Split error */}
                         {amountPaise != null && amountPaise > 0 && splitTotal !== amountPaise && splitTotal > 0 && (
                             <Text style={[typography.caption, { color: colors.danger, paddingTop: spacing.sm }]}>
                                 Split total {formatRupees(splitTotal)} ≠ amount {formatRupees(amountPaise)}
@@ -494,11 +469,8 @@ export default function AddExpenseScreen() {
                         )}
                     </View>
 
-                    {/* Error */}
                     {error ? (
-                        <Text style={[typography.caption, { color: colors.danger, marginTop: spacing.sm }]}>
-                            {error}
-                        </Text>
+                        <Text style={[typography.caption, { color: colors.danger, marginTop: spacing.sm }]}>{error}</Text>
                     ) : null}
 
                     {/* Delete button (edit mode only) */}
@@ -509,7 +481,8 @@ export default function AddExpenseScreen() {
                             accessibilityRole="button"
                             accessibilityLabel="Delete expense"
                         >
-                            <Text style={[typography.bodyMd, { color: colors.danger }]}>🗑 Delete Expense</Text>
+                            <Icon name="action.delete" size={18} color={colors.danger} />
+                            <Text style={[typography.bodyMd, { color: colors.danger }]}>Delete Expense</Text>
                         </Pressable>
                     )}
                 </ScrollView>
@@ -551,113 +524,58 @@ export default function AddExpenseScreen() {
     );
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
 const styles = StyleSheet.create({
     root: { flex: 1 },
     guard: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
     content: { padding: spacing.md, paddingBottom: spacing.xl },
-
     offlineBanner: {
-        borderRadius: radii.sm,
-        padding: spacing.sm,
-        marginBottom: spacing.md,
-        alignItems: 'center',
-    },
-
-    fieldLabel: {
-        ...typography.label,
-        marginTop: spacing.lg,
-        marginBottom: spacing.sm,
-    },
-
-    input: {
-        height: 52,
-        borderRadius: radii.md,
-        borderWidth: 1,
-        paddingHorizontal: spacing.md,
-        ...typography.body,
-    },
-
-    amountRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        height: 64,
-        borderRadius: radii.md,
-        borderWidth: 1,
-        paddingHorizontal: spacing.md,
-    },
-    amountPrefix: { ...typography.monoLg, marginRight: spacing.xs },
-    amountInput: { flex: 1, ...typography.monoLg, paddingVertical: 0 },
-
-    chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
-
-    paidByRow: { marginBottom: spacing.sm },
-    paidByChip: {
         flexDirection: 'row',
         alignItems: 'center',
         gap: spacing.xs,
-        borderRadius: radii.full,
-        borderWidth: 1,
-        paddingVertical: spacing.xs,
-        paddingHorizontal: spacing.sm,
-        marginRight: spacing.sm,
-    },
-
-    splitHeader: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        justifyContent: 'space-between',
-        marginTop: spacing.lg,
+        borderRadius: radii.sm,
+        padding: spacing.sm,
         marginBottom: spacing.md,
     },
+    fieldLabel: { ...typography.label, marginTop: spacing.lg, marginBottom: spacing.sm },
+    input: {
+        height: 52, borderRadius: radii.md, borderWidth: 1,
+        paddingHorizontal: spacing.md, ...typography.body,
+    },
+    amountRow: {
+        flexDirection: 'row', alignItems: 'center', height: 64,
+        borderRadius: radii.md, borderWidth: 1, paddingHorizontal: spacing.md,
+    },
+    amountPrefix: { ...typography.monoLg, marginRight: spacing.xs },
+    amountInput: { flex: 1, ...typography.monoLg, paddingVertical: 0 },
+    chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
+    paidByRow: { marginBottom: spacing.sm },
+    paidByChip: {
+        flexDirection: 'row', alignItems: 'center', gap: spacing.xs,
+        borderRadius: radii.full, borderWidth: 1,
+        paddingVertical: spacing.xs, paddingHorizontal: spacing.sm,
+        marginRight: spacing.sm,
+    },
+    splitHeader: {
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+        marginTop: spacing.lg, marginBottom: spacing.md,
+    },
     splitToggle: { flexDirection: 'row', gap: spacing.xs },
-    toggleBtn: {
-        borderRadius: radii.sm,
-        paddingVertical: spacing.xs,
-        paddingHorizontal: spacing.md,
-    },
-
+    toggleBtn: { borderRadius: radii.sm, paddingVertical: spacing.xs, paddingHorizontal: spacing.md },
     progressSection: { marginBottom: spacing.md },
-
+    splitStatusRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 4 },
     splitCard: {
-        borderRadius: radii.md,
-        borderWidth: StyleSheet.hairlineWidth,
-        overflow: 'hidden',
-        paddingHorizontal: spacing.md,
+        borderRadius: radii.md, borderWidth: StyleSheet.hairlineWidth,
+        overflow: 'hidden', paddingHorizontal: spacing.md,
     },
-    splitRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        paddingVertical: spacing.sm,
-    },
+    splitRow: { flexDirection: 'row', alignItems: 'center', paddingVertical: spacing.sm },
     splitInput: {
-        width: 80,
-        height: 36,
-        borderRadius: radii.sm,
-        borderWidth: 1,
-        paddingHorizontal: spacing.sm,
-        ...typography.mono,
-        textAlign: 'right',
+        width: 80, height: 36, borderRadius: radii.sm, borderWidth: 1,
+        paddingHorizontal: spacing.sm, ...typography.mono, textAlign: 'right',
     },
-
     deleteBtn: {
-        marginTop: spacing.xl,
-        height: 48,
-        borderRadius: radii.md,
-        borderWidth: 1.5,
-        alignItems: 'center',
-        justifyContent: 'center',
+        marginTop: spacing.xl, height: 48, borderRadius: radii.md, borderWidth: 1.5,
+        flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: spacing.sm,
     },
-
-    footer: {
-        padding: spacing.md,
-        borderTopWidth: StyleSheet.hairlineWidth,
-    },
-    submitBtn: {
-        height: 56,
-        borderRadius: radii.md,
-        alignItems: 'center',
-        justifyContent: 'center',
-    },
+    footer: { padding: spacing.md, borderTopWidth: StyleSheet.hairlineWidth },
+    submitBtn: { height: 56, borderRadius: radii.md, alignItems: 'center', justifyContent: 'center' },
 });

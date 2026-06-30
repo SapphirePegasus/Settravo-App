@@ -4,13 +4,9 @@
  * Bottom sheet shown when the center [+] FAB is tapped.
  * Options:
  *   - Create New Group → navigates to (trip)/create
- *   - Create Expense → shows group picker (MemberPickerSheet) then navigates
+ *   - Create Expense → shows group picker inline then navigates
  *
- * Uses a simple Modal with slide-up animation (no external sheet library).
- * Reanimated-driven spring in Phase E — for now uses React Native's default.
- *
- * If currentTripId is provided, the "Create Expense" option skips the
- * group picker and goes directly to add-expense for that trip.
+ * All emoji replaced with <Icon /> components.
  */
 
 import React, { useCallback } from 'react';
@@ -22,23 +18,21 @@ import {
     View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import { Icon } from '../ui/Icon';
 import { useThemeColors } from '@/hooks/useThemeColors';
 import { useTrips } from '@/hooks/useTrips';
 import { spacing, typography, radii, shadows } from '@/theme';
 
-// ─── Props ────────────────────────────────────────────────────────────────────
-
 interface FABSheetProps {
     visible: boolean;
     onDismiss: () => void;
+    onJoinGroup: () => void;
     onCreateGroup: () => void;
-    /** Called with the selected tripId */
     onCreateExpense: (tripId: string) => void;
 }
 
-// ─── Component ────────────────────────────────────────────────────────────────
-
-export function FABSheet({ visible, onDismiss, onCreateGroup, onCreateExpense }: FABSheetProps) {
+export function FABSheet({ visible, onDismiss, onJoinGroup, onCreateGroup, onCreateExpense }: FABSheetProps) {
     const colors = useThemeColors();
     const insets = useSafeAreaInsets();
     const { trips } = useTrips();
@@ -68,12 +62,36 @@ export function FABSheet({ visible, onDismiss, onCreateGroup, onCreateExpense }:
                     },
                 ]}
             >
-                {/* Handle */}
                 <View style={[styles.handle, { backgroundColor: colors.separator }]} />
 
                 <Text style={[styles.sheetTitle, { color: colors.textSecondary }]}>
                     WHAT DO YOU WANT TO DO?
                 </Text>
+
+                {/* Join Group — first position */}
+                <Pressable
+                    style={({ pressed }) => [
+                        styles.option,
+                        { backgroundColor: colors.card },
+                        pressed && styles.optionPressed,
+                    ]}
+                    onPress={onJoinGroup}
+                    accessibilityRole="button"
+                    accessibilityLabel="Join an existing group"
+                >
+                    <View style={[styles.optionIconBox, { backgroundColor: colors.accentLight }]}>
+                        <Icon name="action.qrCode" size={24} color={colors.accent} />
+                    </View>
+                    <View style={styles.optionText}>
+                        <Text style={[typography.bodyMd, { color: colors.text }]}>
+                            Join Group
+                        </Text>
+                        <Text style={[typography.caption, { color: colors.textSecondary }]}>
+                            Scan QR or enter a code
+                        </Text>
+                    </View>
+                    <Icon name="header.forward" size={18} color={colors.icon} />
+                </Pressable>
 
                 {/* Create Group */}
                 <Pressable
@@ -86,7 +104,9 @@ export function FABSheet({ visible, onDismiss, onCreateGroup, onCreateExpense }:
                     accessibilityRole="button"
                     accessibilityLabel="Create new group"
                 >
-                    <Text style={styles.optionEmoji}>🏕️</Text>
+                    <View style={[styles.optionIconBox, { backgroundColor: colors.accentLight }]}>
+                        <Icon name="nav.groups" size={24} color={colors.accent} />
+                    </View>
                     <View style={styles.optionText}>
                         <Text style={[typography.bodyMd, { color: colors.text }]}>
                             Create New Group
@@ -95,11 +115,14 @@ export function FABSheet({ visible, onDismiss, onCreateGroup, onCreateExpense }:
                             Start a new trip or event
                         </Text>
                     </View>
+                    <Icon name="header.forward" size={18} color={colors.icon} />
                 </Pressable>
 
-                {/* Create Expense (shows trip picker inline if multiple trips) */}
+                {/* Create Expense */}
                 <View style={[styles.option, { backgroundColor: colors.card }]}>
-                    <Text style={styles.optionEmoji}>💸</Text>
+                    <View style={[styles.optionIconBox, { backgroundColor: colors.accentLight }]}>
+                        <Icon name="money.receipt" size={24} color={colors.accent} />
+                    </View>
                     <View style={styles.optionText}>
                         <Text style={[typography.bodyMd, { color: colors.text }]}>
                             Create Expense
@@ -128,6 +151,7 @@ export function FABSheet({ visible, onDismiss, onCreateGroup, onCreateExpense }:
                                 <Text style={[typography.body, { color: colors.text }]} numberOfLines={1}>
                                     {trip.name}
                                 </Text>
+                                <Icon name="header.forward" size={16} color={colors.icon} />
                             </Pressable>
                         ))}
                     </View>
@@ -136,8 +160,6 @@ export function FABSheet({ visible, onDismiss, onCreateGroup, onCreateExpense }:
         </Modal>
     );
 }
-
-// ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
     scrim: {
@@ -171,20 +193,24 @@ const styles = StyleSheet.create({
         borderRadius: radii.md,
         marginBottom: spacing.sm,
     },
-    optionPressed: {
-        opacity: 0.75,
+    optionPressed: { opacity: 0.75 },
+    optionIconBox: {
+        width: 44,
+        height: 44,
+        borderRadius: radii.md,
+        alignItems: 'center',
+        justifyContent: 'center',
+        flexShrink: 0,
     },
-    optionEmoji: {
-        fontSize: 28,
-    },
-    optionText: {
-        flex: 1,
-    },
+    optionText: { flex: 1 },
     tripList: {
         marginTop: spacing.xs,
         gap: spacing.xs,
     },
     tripOption: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        justifyContent: 'space-between',
         paddingVertical: spacing.sm,
         paddingHorizontal: spacing.md,
         borderRadius: radii.sm,

@@ -4,12 +4,7 @@
  * Cross-group activity timeline, grouped by date (Today / Yesterday / date).
  * Filter: "All Groups" dropdown narrows to a single trip.
  *
- * Activity events derived client-side from existing stores — no new fetch.
- * Events: expense added/edited/deleted, settlement marked, member joined.
- *
- * Since there's no dedicated activity log table yet, this derives events
- * from expenseStore + memberStore timestamps. Full audit-log table is a
- * backend addition tracked separately (not blocking UI here).
+ * All emoji replaced with <Icon /> or plain text.
  */
 
 import { useRouter } from 'expo-router';
@@ -21,13 +16,12 @@ import { Avatar } from '../../components/ui/Avatar';
 import { AmountText } from '../../components/ui/AmountText';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { BottomSheet } from '../../components/ui/BottomSheet';
+import { Icon } from '../../components/ui/Icon';
 import { useThemeColors } from '../../hooks/useThemeColors';
 import { useExpenseStore } from '../../stores/expenseStore';
 import { useMemberStore } from '../../stores/memberStore';
 import { useTripStore } from '../../stores/tripStore';
 import { typography, spacing, radii } from '@/theme';
-
-// ─── Types ────────────────────────────────────────────────────────────────────
 
 interface ActivityItem {
     id: string;
@@ -45,8 +39,6 @@ interface ActivitySection {
     data: ActivityItem[];
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
 function formatSectionTitle(dateKey: string): string {
     const date = new Date(dateKey);
     const today = new Date();
@@ -63,8 +55,6 @@ function formatTime(iso: string): string {
     return new Date(iso).toLocaleTimeString('en-IN', { hour: 'numeric', minute: '2-digit' });
 }
 
-// ─── Screen ───────────────────────────────────────────────────────────────────
-
 export default function ActivityScreen() {
     const router = useRouter();
     const colors = useThemeColors();
@@ -77,7 +67,6 @@ export default function ActivityScreen() {
 
     const tripNameMap = useMemo(() => new Map(trips.map((t) => [t.id, t.name])), [trips]);
 
-    // Build activity items from expense store across all trips (or filtered)
     const sections: ActivitySection[] = useMemo(() => {
         const items: ActivityItem[] = [];
 
@@ -128,8 +117,9 @@ export default function ActivityScreen() {
                     accessibilityLabel="Filter by group"
                 >
                     <Text style={[typography.caption, { color: colors.text }]} numberOfLines={1}>
-                        {filterLabel} ▾
+                        {filterLabel}
                     </Text>
+                    <Icon name="header.forward" size={14} color={colors.icon} />
                 </Pressable>
             </View>
 
@@ -167,7 +157,7 @@ export default function ActivityScreen() {
                 )}
                 ListEmptyComponent={
                     <EmptyState
-                        illustration="📋"
+                        iconKey="nav.activity"
                         title="No activity yet"
                         subtitle="Expenses and settlements will show up here."
                     />
@@ -210,6 +200,9 @@ const styles = StyleSheet.create({
         paddingBottom: spacing.sm,
     },
     filterChip: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: spacing.xs,
         borderRadius: radii.full,
         borderWidth: 1,
         paddingVertical: spacing.xs,

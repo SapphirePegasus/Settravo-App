@@ -1,14 +1,7 @@
 /**
  * app/(trip)/join.tsx — Join Trip screen
  *
- * Two join methods:
- *  1. QR scan via CameraView.launchScanner() (system scanner, no permission prompt)
- *  2. Manual 4-char code entry with auto-uppercase
- *
- * QR payload format: "settravo://join?code=XXXX"
- *
- * REFACTOR: removed useColorScheme() + broken token refs (subText→textSecondary,
- * border→cardBorder, error→danger, warningText→warning).
+ * 📷 camera emoji replaced with <Icon name="action.camera" />.
  */
 
 import { CameraView } from 'expo-camera';
@@ -26,6 +19,7 @@ import {
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 
+import { Icon } from '../../components/ui/Icon';
 import { useThemeColors } from '../../hooks/useThemeColors';
 import { joinTrip } from '../../services/tripService';
 import { useAuthStore } from '../../stores/authStore';
@@ -45,8 +39,6 @@ export default function JoinScreen() {
     const [code, setCode] = useState('');
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
-
-    // ── QR scan ───────────────────────────────────────────────────────────────
 
     const handleCodeFromScan = useCallback((raw: string) => {
         let extracted = raw.trim().toUpperCase();
@@ -75,8 +67,6 @@ export default function JoinScreen() {
         }
     }, [handleCodeFromScan]);
 
-    // ── Manual join ───────────────────────────────────────────────────────────
-
     const handleJoin = useCallback(async () => {
         if (!deviceUser?.displayName) return;
         const trimmed = code.trim().toUpperCase();
@@ -98,18 +88,11 @@ export default function JoinScreen() {
         }
     }, [code, deviceUser, addTrip, setActiveTripId, router]);
 
-    // ── Render ────────────────────────────────────────────────────────────────
-
     return (
         <SafeAreaView style={[styles.root, { backgroundColor: colors.bg }]} edges={['top', 'left', 'right']}>
-            <KeyboardAvoidingView
-                style={styles.flex}
-                behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-            >
+            <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
                 <View style={styles.content}>
-                    <Text style={[typography.heading, { color: colors.text }]}>
-                        Join a Trip
-                    </Text>
+                    <Text style={[typography.heading, { color: colors.text }]}>Join a Group</Text>
                     <Text style={[typography.body, { color: colors.textSecondary, marginTop: spacing.sm, marginBottom: spacing.xl }]}>
                         Scan the QR code from the trip creator, or type the 4-character code.
                     </Text>
@@ -122,7 +105,7 @@ export default function JoinScreen() {
                         accessibilityRole="button"
                         accessibilityLabel="Scan QR code"
                     >
-                        <Text style={styles.scanIcon}>📷</Text>
+                        <Icon name="action.qrCode" size={22} color={colors.icon} />
                         <Text style={[typography.bodyMd, { color: colors.text }]}>Scan QR Code</Text>
                     </Pressable>
 
@@ -184,7 +167,7 @@ export default function JoinScreen() {
                             <ActivityIndicator color="#FFFFFF" />
                         ) : (
                             <Text style={[typography.bodyMd, { color: colors.textInverse, fontWeight: '600' }]}>
-                                Join Trip
+                                Join Group
                             </Text>
                         )}
                     </Pressable>
@@ -197,11 +180,7 @@ export default function JoinScreen() {
 const styles = StyleSheet.create({
     root: { flex: 1 },
     flex: { flex: 1 },
-    content: {
-        flex: 1,
-        padding: spacing.lg,
-        paddingTop: spacing.xl,
-    },
+    content: { flex: 1, padding: spacing.lg, paddingTop: spacing.xl },
     scanButton: {
         flexDirection: 'row',
         alignItems: 'center',
@@ -212,16 +191,8 @@ const styles = StyleSheet.create({
         borderWidth: 1,
         marginBottom: spacing.lg,
     },
-    scanIcon: { fontSize: 22 },
-    dividerRow: {
-        flexDirection: 'row',
-        alignItems: 'center',
-        marginBottom: spacing.lg,
-    },
-    dividerLine: {
-        flex: 1,
-        height: StyleSheet.hairlineWidth,
-    },
+    dividerRow: { flexDirection: 'row', alignItems: 'center', marginBottom: spacing.lg },
+    dividerLine: { flex: 1, height: StyleSheet.hairlineWidth },
     codeInput: {
         height: 56,
         borderRadius: radii.md,

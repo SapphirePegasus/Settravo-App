@@ -1,13 +1,10 @@
 /**
- * TripMenuSheet.tsx
+ * src/components/trip/TripMenuSheet.tsx
  *
- * Bottom-sheet action menu accessible via the ⋯ header button on the
- * trip detail screen. Groups all secondary trip-level actions:
- *  - Share expense list   (all members)
- *  - Edit trip            (creator only)
- *  - Leave trip           (non-creator members)
+ * Bottom-sheet action menu via the ⋯ header button on trip detail.
  *
- * Uses Modal + Animated (no new dependency).
+ * BREAKING CHANGE: `Action.icon` (emoji string) → `Action.iconKey` (IconKey).
+ * Update call sites in app/(trip)/[tripId]/index.tsx accordingly.
  */
 
 import { useEffect, useRef } from 'react';
@@ -22,11 +19,15 @@ import {
     View,
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
+
+import { Icon } from '../ui/Icon';
+import type { IconKey } from '../../config/icons';
 import { useThemeColors } from '../../hooks/useThemeColors';
 
-interface Action {
+export interface TripMenuAction {
     label: string;
-    icon: string;
+    /** Semantic icon key from src/config/icons.ts. */
+    iconKey: IconKey;
     variant?: 'default' | 'destructive';
     onPress: () => void;
 }
@@ -34,7 +35,7 @@ interface Action {
 interface Props {
     visible: boolean;
     onClose: () => void;
-    actions: Action[];
+    actions: TripMenuAction[];
 }
 
 export function TripMenuSheet({ visible, onClose, actions }: Props) {
@@ -91,39 +92,43 @@ export function TripMenuSheet({ visible, onClose, actions }: Props) {
             >
                 <View style={[styles.handle, { backgroundColor: colors.handleBar }]} />
 
-                {actions.map((action, i) => (
-                    <Pressable
-                        key={i}
-                        style={({ pressed }) => [
-                            styles.actionRow,
-                            { borderTopColor: colors.separator },
-                            i > 0 && styles.divider,
-                            pressed && { opacity: 0.6 },
-                        ]}
-                        onPress={() => {
-                            onClose();
-                            // Small delay so sheet closes before the action fires
-                            setTimeout(action.onPress, 160);
-                        }}
-                        accessibilityRole="button"
-                        accessibilityLabel={action.label}
-                    >
-                        <Text style={styles.actionIcon}>{action.icon}</Text>
-                        <Text
-                            style={[
-                                styles.actionLabel,
-                                {
-                                    color:
-                                        action.variant === 'destructive'
-                                            ? colors.accentDestructive
-                                            : colors.text,
-                                },
+                {actions.map((action, i) => {
+                    const iconColor = action.variant === 'destructive'
+                        ? colors.accentDestructive
+                        : colors.icon;
+                    const labelColor = action.variant === 'destructive'
+                        ? colors.accentDestructive
+                        : colors.text;
+
+                    return (
+                        <Pressable
+                            key={i}
+                            style={({ pressed }) => [
+                                styles.actionRow,
+                                { borderTopColor: colors.separator },
+                                i > 0 && styles.divider,
+                                pressed && { opacity: 0.6 },
                             ]}
+                            onPress={() => {
+                                onClose();
+                                setTimeout(action.onPress, 160);
+                            }}
+                            accessibilityRole="button"
+                            accessibilityLabel={action.label}
                         >
-                            {action.label}
-                        </Text>
-                    </Pressable>
-                ))}
+                            <View style={styles.iconWrap}>
+                                <Icon
+                                    name={action.iconKey}
+                                    size={22}
+                                    color={iconColor}
+                                />
+                            </View>
+                            <Text style={[styles.actionLabel, { color: labelColor }]}>
+                                {action.label}
+                            </Text>
+                        </Pressable>
+                    );
+                })}
             </Animated.View>
         </Modal>
     );
@@ -159,6 +164,6 @@ const styles = StyleSheet.create({
         gap: 14, paddingVertical: 16, paddingHorizontal: 20,
     },
     divider: { borderTopWidth: StyleSheet.hairlineWidth },
-    actionIcon: { fontSize: 20, width: 28, textAlign: 'center' },
+    iconWrap: { width: 28, alignItems: 'center' },
     actionLabel: { fontSize: 17 },
 });

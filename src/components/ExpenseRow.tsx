@@ -2,53 +2,52 @@
  * src/components/ExpenseRow.tsx
  *
  * Single expense row with swipe-to-reveal Edit and Delete actions.
- *
- * Fix: replaced hardcoded hex in swipeStyles (editAction '#ff9500' → colors.warning,
- *      deleteAction '#ff3b30' → colors.danger, '#ffffff' → '#FFFFFF' token-safe).
- * Fix: replaced colors.accentWarning → colors.warning in sync chip.
- * Fix: replaced raw font sizes with typography tokens.
- * Fix: swipe action colors now come from theme via a factory to stay pure.
- *
- * Business logic unchanged: Swipeable, ConfirmModal, React.memo equality.
+ * All emoji replaced with <Icon /> from src/config/icons.ts.
  */
 
 import { Swipeable } from 'react-native-gesture-handler';
 import React, { useCallback, useRef, useState } from 'react';
 import { Animated, Pressable, StyleSheet, Text, View } from 'react-native';
+
 import { ConfirmModal } from './modals/ConfirmModal';
+import { Icon } from '../components/ui/Icon';
 import { useThemeColors } from '../hooks/useThemeColors';
+import { CATEGORY_ICON_MAP } from '../config/icons';
+import type { IconKey } from '../config/icons';
 import type { Expense, Member } from '../types/domain';
 import { formatRupees } from '../utils/money';
 import { typography, spacing, radii } from '@/theme';
 
-// ─── Constants ────────────────────────────────────────────────────────────────
+// ─── Category label map (no icons — icon rendered separately) ─────────────
 
 const CATEGORY_LABELS: Record<string, string> = {
-    food:      '🍽 Food',
-    transport: '🚗 Transport',
-    stay:      '🏨 Stay',
-    misc:      '📦 Misc',
+    food: 'Food',
+    transport: 'Transport',
+    stay: 'Stay',
+    misc: 'Others',
 };
+
+const FALLBACK_ICON: IconKey = 'money.receipt';
 
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface ExpenseRowProps {
-    expense:          Expense;
-    members:          Member[];
+    expense: Expense;
+    members: Member[];
     currentMemberId?: string;
-    onDelete?:        (expenseId: string) => Promise<void>;
-    onEdit?:          (expenseId: string) => void;
+    onDelete?: (expenseId: string) => Promise<void>;
+    onEdit?: (expenseId: string) => void;
 }
 
 // ─── Swipe actions ────────────────────────────────────────────────────────────
 
 function RightActions(
     progress: Animated.AnimatedInterpolation<number>,
-    _drag:    Animated.AnimatedInterpolation<number>,
+    _drag: Animated.AnimatedInterpolation<number>,
     onDeletePress: () => void,
-    onEditPress:   () => void,
+    onEditPress: () => void,
     warningColor: string,
-    dangerColor:  string,
+    dangerColor: string,
 ) {
     const scale = progress.interpolate({
         inputRange: [0, 1], outputRange: [0.8, 1], extrapolate: 'clamp',
@@ -63,7 +62,7 @@ function RightActions(
                     accessibilityRole="button"
                     accessibilityLabel="Edit expense"
                 >
-                    <Text style={swipeStyles.actionIcon}>✏️</Text>
+                    <Icon name="action.edit" size={18} color="#FFFFFF" />
                     <Text style={swipeStyles.actionLabel}>EDIT</Text>
                 </Pressable>
             </Animated.View>
@@ -74,7 +73,7 @@ function RightActions(
                     accessibilityRole="button"
                     accessibilityLabel="Delete expense"
                 >
-                    <Text style={swipeStyles.actionIcon}>🗑</Text>
+                    <Icon name="action.delete" size={18} color="#FFFFFF" />
                     <Text style={swipeStyles.actionLabel}>DELETE</Text>
                 </Pressable>
             </Animated.View>
@@ -85,14 +84,17 @@ function RightActions(
 // ─── Component ────────────────────────────────────────────────────────────────
 
 function ExpenseRowInner({ expense, members, currentMemberId, onDelete, onEdit }: ExpenseRowProps) {
-    const colors       = useThemeColors();
+    const colors = useThemeColors();
     const swipeableRef = useRef<Swipeable>(null);
     const [confirmVisible, setConfirmVisible] = useState(false);
 
-    const payer     = members.find((m) => m.id === expense.paidByMember);
+    const payer = members.find((m) => m.id === expense.paidByMember);
     const payerName = payer?.displayName ?? 'Unknown';
-    const isOwner   = currentMemberId === expense.paidByMember;
-    const canSwipe  = isOwner && (Boolean(onDelete) || Boolean(onEdit));
+    const isOwner = currentMemberId === expense.paidByMember;
+    const canSwipe = isOwner && (Boolean(onDelete) || Boolean(onEdit));
+
+    const categoryIconKey: IconKey =
+        expense.category ? (CATEGORY_ICON_MAP[expense.category] ?? FALLBACK_ICON) : FALLBACK_ICON;
 
     const handleDeletePress = useCallback(() => {
         swipeableRef.current?.close();
@@ -108,10 +110,6 @@ function ExpenseRowInner({ expense, members, currentMemberId, onDelete, onEdit }
         setConfirmVisible(false);
         await onDelete?.(expense.id);
     }, [onDelete, expense.id]);
-
-    const categoryEmoji = expense.category
-        ? CATEGORY_LABELS[expense.category]?.split(' ')[0] ?? '💳'
-        : '💳';
 
     return (
         <>
@@ -130,7 +128,11 @@ function ExpenseRowInner({ expense, members, currentMemberId, onDelete, onEdit }
                 <View style={[styles.row, { backgroundColor: colors.card }]}>
                     {/* Category icon box */}
                     <View style={[styles.iconBox, { backgroundColor: colors.emojiBox }]}>
-                        <Text style={styles.icon}>{categoryEmoji}</Text>
+                        <Icon
+                            name={categoryIconKey}
+                            size={22}
+                            color={colors.icon}
+                        />
                     </View>
 
                     {/* Title + payer */}
@@ -141,15 +143,19 @@ function ExpenseRowInner({ expense, members, currentMemberId, onDelete, onEdit }
                             </Text>
                             {expense.isPendingSync && (
                                 <View style={[styles.syncChip, { backgroundColor: colors.warningMuted }]}>
+                                    <Icon name="status.syncing" size={10} color={colors.warning} />
                                     <Text style={[styles.syncChipText, { color: colors.warning }]}>
-                                        ⏳ SYNCING
+                                        SYNCING
                                     </Text>
                                 </View>
                             )}
                         </View>
                         <Text style={[typography.caption, { color: colors.textSecondary, marginTop: 2 }]} numberOfLines={1}>
-                            {expense.category ? `${CATEGORY_LABELS[expense.category] ?? '📦'} · ` : ''}
-                            Paid by {payerName}{payer?.isGuest ? ' 👤' : ''}
+                            {expense.category ? `${CATEGORY_LABELS[expense.category] ?? 'Other'} · ` : ''}
+                            Paid by {payerName}
+                            {payer?.isGuest ? (
+                                <> <Icon name="status.guest" size={11} color={colors.textSecondary} /></>
+                            ) : ''}
                         </Text>
                     </View>
 
@@ -174,14 +180,14 @@ function ExpenseRowInner({ expense, members, currentMemberId, onDelete, onEdit }
 }
 
 export const ExpenseRow = React.memo(ExpenseRowInner, (prev, next) =>
-    prev.expense.id            === next.expense.id            &&
-    prev.expense.title         === next.expense.title         &&
-    prev.expense.amountMoney   === next.expense.amountMoney   &&
-    prev.expense.category      === next.expense.category      &&
-    prev.expense.paidByMember  === next.expense.paidByMember  &&
+    prev.expense.id === next.expense.id &&
+    prev.expense.title === next.expense.title &&
+    prev.expense.amountMoney === next.expense.amountMoney &&
+    prev.expense.category === next.expense.category &&
+    prev.expense.paidByMember === next.expense.paidByMember &&
     prev.expense.isPendingSync === next.expense.isPendingSync &&
-    prev.currentMemberId       === next.currentMemberId       &&
-    prev.members               === next.members,
+    prev.currentMemberId === next.currentMemberId &&
+    prev.members === next.members,
 );
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
@@ -189,24 +195,26 @@ export const ExpenseRow = React.memo(ExpenseRowInner, (prev, next) =>
 const styles = StyleSheet.create({
     row: {
         flexDirection: 'row',
-        alignItems:    'center',
-        gap:           spacing.sm,
-        padding:       spacing.md,
+        alignItems: 'center',
+        gap: spacing.sm,
+        padding: spacing.md,
     },
     iconBox: {
-        width:          44,
-        height:         44,
-        borderRadius:   radii.sm,
-        alignItems:     'center',
+        width: 44,
+        height: 44,
+        borderRadius: radii.sm,
+        alignItems: 'center',
         justifyContent: 'center',
     },
-    icon:     { fontSize: 20 },
-    info:     { flex: 1, minWidth: 0 },
+    info: { flex: 1, minWidth: 0 },
     titleRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs, flexShrink: 1 },
     syncChip: {
-        borderRadius:      radii.xs,
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: 2,
+        borderRadius: radii.xs,
         paddingHorizontal: spacing.xs,
-        paddingVertical:   1,
+        paddingVertical: 1,
     },
     syncChipText: { fontSize: 9, fontWeight: '700', letterSpacing: 0.3 },
 });
@@ -214,11 +222,10 @@ const styles = StyleSheet.create({
 const swipeStyles = StyleSheet.create({
     container: { flexDirection: 'row', alignItems: 'stretch' },
     action: {
-        width:          72,
-        alignItems:     'center',
+        width: 72,
+        alignItems: 'center',
         justifyContent: 'center',
-        gap:            4,
+        gap: 4,
     },
-    actionIcon:  { fontSize: 18 },
     actionLabel: { color: '#FFFFFF', fontSize: 10, fontWeight: '700', letterSpacing: 0.5 },
 });
