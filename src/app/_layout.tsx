@@ -145,14 +145,17 @@ function RootLayoutInner() {
     }
 
     // ── Main navigation ───────────────────────────────────────────────────────
+    // Do NOT manually declare <Stack.Screen name="(auth)" /> etc. here.
+    // Expo Router auto-registers route groups from the filesystem. Manually
+    // re-declaring them alongside the conditional <Redirect> above caused the
+    // navigator's internal screen list to change every render, which
+    // destabilized @react-navigation's useSyncState and produced:
+    //   "Maximum update depth exceeded" — infinite re-render loop.
+    // An empty <Stack> with only screenOptions is the correct, stable pattern.
     return (
         <>
             <StatusBar style={colors.statusBarStyle} />
-            <Stack screenOptions={{ headerShown: false }}>
-                <Stack.Screen name="(auth)" options={{ headerShown: false }} />
-                <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
-                <Stack.Screen name="(trip)" options={{ headerShown: false }} />
-            </Stack>
+            <Stack screenOptions={{ headerShown: false }} />
         </>
     );
 }
