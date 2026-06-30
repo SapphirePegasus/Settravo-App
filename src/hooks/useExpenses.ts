@@ -8,9 +8,11 @@
  *  3. Tears down the subscription on unmount (critical — prevents leaks).
  *  4. Exposes expenses, splits, loading state, and a refresh function.
  *
- * Usage: call once at the top of the trip detail screen.
- * Do NOT call in child components — each call creates a new Realtime channel.
- *
+ * Usage: call at the top of any trip-scoped screen. It is safe for multiple
+ * sibling screens (index, activity, settle) to call this concurrently for
+ * the same tripId — realtimeService.ts reference-counts a single shared
+ * channel per tripId, so duplicate calls reuse it instead of conflicting.
+ * 
  * FIX (v2): The previous implementation used inline `?? []` in the Zustand
  * selector, which creates a new array reference on every render when the key
  * is absent. React 18's concurrent mode calls getSnapshot multiple times and

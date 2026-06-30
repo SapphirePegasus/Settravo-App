@@ -2,8 +2,22 @@
  * realtimeService.ts
  *
  * Manages the Supabase Realtime subscription for a single trip channel.
- * One channel per active trip: "trip:{tripId}"
- * Listens to postgres_changes on TravelAppExpenses and TravelAppSplits.
+ * One LOGICAL channel per tripId: "trip:{tripId}" — shared across every
+ * `useExpenses(tripId)` hook instance currently mounted for that trip
+ * (e.g. index.tsx, activity.tsx, settle.tsx, all within the same
+ * `(trip)/[tripId]` stack, which Expo Router keeps frozen-not-unmounted
+ * when navigating between sibling screens).
+ *
+ * ⚠️ CRITICAL — why this is reference-counted (do not "simplify" this away):
+ *   `RealtimeClient.channel(topic)` in @supabase/supabase-js dedupes by
+ *   topic string. If a channel for `realtime:trip:{tripId}` already exists
+ *   in the client's internal registry, calling `supabase.channel(topic)`
+ *   again returns THAT SAME object — even if it is already SUBSCRIBED.
+ *   Calling `.on('postgres_changes', ...)` on an already-subscribed channel
+ *   throws: "cannot add postgres_changes callbacks ... after subscribe()".
+ *   Multiple independent callers for the same tripId therefore MUST share
+ *   one underlying channel; only the first caller may construct+subscribe
+ *   it, and it may only be torn down once every caller has released it.
  *
  * Reconnect strategy (confirmed against Supabase Discussion #27513):
  *  - CHANNEL_ERROR and CLOSED are the same incident — guard with
@@ -14,24 +28,15 @@
  *    until they background/foreground the app (which triggers a full remount).
  *
  * Caller responsibilities:
- *  - Call subscribeToTrip() when navigating into a trip screen.
- *  - Call the returned unsubscribe() when navigating away.
- *  - Never call subscribeToTrip() for the same tripId twice without
- *    calling the previous unsubscribe first — this leaks channels.
+ *  - Call subscribeToTrip(tripId) on mount; it is safe to call this from
+ *    multiple components for the same tripId at the same time.
+ *  - Call the returned unsubscribe() exactly once per subscribeToTrip()
+ *    call, on cleanup. Calling it more than once is a safe no-op.
  *
  * ⚠️  Supabase Realtime requires tables to be added to the publication:
  *      ALTER PUBLICATION supabase_realtime ADD TABLE "TravelAppExpenses";
  *      ALTER PUBLICATION supabase_realtime ADD TABLE "TravelAppSplits";
  *    Do this once in the Supabase SQL editor. Without it, no change events fire.
- */
-
-/**
- * realtimeService.ts — Supabase Realtime subscription for a single trip.
- *
- * Changes vs previous version:
- *  - Calls setChannelMounted(true) on subscribe start, setChannelMounted(false)
- *    on teardown, so the ConnectionBanner only appears when a channel is
- *    actually expected to be live (fixes persistent "Reconnecting" on home screen).
  */
 
 import type { RealtimeChannel } from '@supabase/supabase-js';
@@ -52,73 +57,98 @@ function backoffDelay(attempt: number): number {
 export interface RealtimeSubscription {
     unsubscribe: () => void;
     /**
-     * Manually re-initiates the connection after max retries have been exceeded.
-     * Wire this to a "Tap to retry" button in ConnectionBanner.
+     * Manually re-initiates the connection after max retries have been
+     * exceeded. Wire this to a "Tap to retry" button in ConnectionBanner.
+     * Affects the shared channel for this tripId — safe to call from any
+     * consumer.
      */
     reconnect: () => void;
 }
 
-export function subscribeToTrip(tripId: string): RealtimeSubscription {
-    let channel: RealtimeChannel | null = null;
-    let attempt = 0;
-    let isReconnecting = false;
-    let isTornDown = false;
-    let backoffTimer: ReturnType<typeof setTimeout> | null = null;
+interface TripChannelEntry {
+    tripId: string;
+    channel: RealtimeChannel | null;
+    refCount: number;
+    attempt: number;
+    isReconnecting: boolean;
+    isTornDown: boolean;
+    backoffTimer: ReturnType<typeof setTimeout> | null;
+}
 
-    const { setRealtimeStatus, setChannelMounted } = useConnectionStore.getState();
+// Module-level singleton registry: exactly one logical channel per tripId,
+// shared across every consumer. This is the load-bearing fix — see the
+// file header for why a non-shared implementation is unsafe.
+const registry = new Map<string, TripChannelEntry>();
+
+function clearBackoffTimer(entry: TripChannelEntry) {
+    if (entry.backoffTimer !== null) {
+        clearTimeout(entry.backoffTimer);
+        entry.backoffTimer = null;
+    }
+}
+
+function removeCurrentChannel(entry: TripChannelEntry) {
+    if (entry.channel) {
+        void supabase.removeChannel(entry.channel);
+        entry.channel = null;
+    }
+}
+
+function connect(entry: TripChannelEntry) {
+    if (entry.isTornDown) return;
+
+    const { tripId } = entry;
+    const { setRealtimeStatus } = useConnectionStore.getState();
     const { applyExpensePatch, applySplitPatch } = useExpenseStore.getState();
 
-    // Signal that a channel is actively mounted
-    setChannelMounted(true);
+    setRealtimeStatus('reconnecting');
 
-    function clearBackoffTimer() {
-        if (backoffTimer !== null) {
-            clearTimeout(backoffTimer);
-            backoffTimer = null;
-        }
-    }
+    entry.channel = supabase
+        .channel(`trip:${tripId}`)
+        .on(
+            'postgres_changes',
+            {
+                event: '*',
+                schema: 'public',
+                table: 'TravelAppExpenses',
+                filter: `trip_id=eq.${tripId}`,
+            },
+            (payload) => {
+                entry.attempt = 0;
+                applyExpensePatch(tripId, payload);
+            },
+        )
+        .on(
+            'postgres_changes',
+            {
+                event: '*',
+                schema: 'public',
+                table: 'TravelAppSplits',
+            },
+            (payload) => {
+                entry.attempt = 0;
+                applySplitPatch(payload);
+            },
+        )
+        .subscribe((status, err) => {
+            if (entry.isTornDown) return;
 
-    function removeCurrentChannel() {
-        if (channel) {
-            void supabase.removeChannel(channel);
-            channel = null;
-        }
-    }
+            if (status === 'SUBSCRIBED') {
+                entry.attempt = 0;
+                entry.isReconnecting = false;
+                setRealtimeStatus('connected');
+                return;
+            }
 
-    function connect() {
-        if (isTornDown) return;
+            if ((status === 'CHANNEL_ERROR' || status === 'CLOSED') && !entry.isReconnecting) {
+                entry.isReconnecting = true;
+                setRealtimeStatus('reconnecting');
 
-        setRealtimeStatus('reconnecting');
+                if (err) {
+                    console.warn(`[realtimeService] Channel ${status}:`, err.message);
+                }
 
-        channel = supabase
-            .channel(`trip:${tripId}`)
-            .on(
-                'postgres_changes',
-                {
-                    event: '*',
-                    schema: 'public',
-                    table: 'TravelAppExpenses',
-                    filter: `trip_id=eq.${tripId}`,
-                },
-                (payload) => {
-                    attempt = 0;
-                    applyExpensePatch(tripId, payload);
-                },
-            )
-            .on(
-                'postgres_changes',
-                {
-                    event: '*',
-                    schema: 'public',
-                    table: 'TravelAppSplits',
-                },
-                (payload) => {
-                    attempt = 0;
-                    applySplitPatch(payload);
-                },
-            )
-            .subscribe((status, err) => {
-                if (attempt >= MAX_RETRIES) {
+                if (entry.attempt >= MAX_RETRIES) {
                     console.error(
                         `[realtimeService] Max retries (${MAX_RETRIES}) reached for trip:${tripId}.`,
                     );
@@ -130,69 +160,66 @@ export function subscribeToTrip(tripId: string): RealtimeSubscription {
                     return;
                 }
 
-                if (isTornDown) return;
+                const delay = backoffDelay(entry.attempt);
+                entry.attempt += 1;
 
-                if (status === 'SUBSCRIBED') {
-                    attempt = 0;
-                    isReconnecting = false;
-                    setRealtimeStatus('connected');
-                    return;
-                }
+                entry.backoffTimer = setTimeout(() => {
+                    if (entry.isTornDown) return;
+                    entry.isReconnecting = false;
+                    removeCurrentChannel(entry);
+                    connect(entry);
+                }, delay);
+            }
 
-                if (
-                    (status === 'CHANNEL_ERROR' || status === 'CLOSED') &&
-                    !isReconnecting
-                ) {
-                    isReconnecting = true;
-                    setRealtimeStatus('reconnecting');
+            if (status === 'TIMED_OUT') {
+                console.warn('[realtimeService] Channel timed out.');
+            }
+        });
+}
 
-                    if (err) {
-                        console.warn(`[realtimeService] Channel ${status}:`, err.message);
-                    }
+export function subscribeToTrip(tripId: string): RealtimeSubscription {
+    let entry = registry.get(tripId);
 
-                    if (attempt >= MAX_RETRIES) {
-                        console.error(
-                            `[realtimeService] Max retries (${MAX_RETRIES}) reached for trip:${tripId}.`,
-                        );
-                        setRealtimeStatus('disconnected');
-                        return;
-                    }
-
-                    const delay = backoffDelay(attempt);
-                    attempt += 1;
-
-                    backoffTimer = setTimeout(() => {
-                        if (isTornDown) return;
-                        isReconnecting = false;
-                        removeCurrentChannel();
-                        connect();
-                    }, delay);
-                }
-
-                if (status === 'TIMED_OUT') {
-                    console.warn('[realtimeService] Channel timed out.');
-                }
-            });
+    if (!entry) {
+        entry = {
+            tripId,
+            channel: null,
+            refCount: 0,
+            attempt: 0,
+            isReconnecting: false,
+            isTornDown: false,
+            backoffTimer: null,
+        };
+        registry.set(tripId, entry);
+        useConnectionStore.getState().setChannelMounted(true);
+        connect(entry);
     }
 
-    connect();
+    entry.refCount += 1;
+    const activeEntry = entry;
+    let released = false; // per-caller guard: this handle may only release its share once
 
     return {
         unsubscribe: () => {
-            isTornDown = true;
-            clearBackoffTimer();
-            removeCurrentChannel();
-            setRealtimeStatus('disconnected');
-            setChannelMounted(false);
+            if (released) return;
+            released = true;
+
+            activeEntry.refCount -= 1;
+            if (activeEntry.refCount > 0) return;
+
+            // Last consumer for this trip — tear the real channel down.
+            activeEntry.isTornDown = true;
+            clearBackoffTimer(activeEntry);
+            removeCurrentChannel(activeEntry);
+            registry.delete(tripId);
+            useConnectionStore.getState().setRealtimeStatus('disconnected');
+            useConnectionStore.getState().setChannelMounted(false);
         },
         reconnect: () => {
-            // Guard: only allow manual reconnect after the backoff loop has
-            // exhausted (status === 'disconnected' and isTornDown is false).
-            // If already reconnecting, this is a no-op.
-            if (isTornDown || isReconnecting) return;
-            attempt = 0; // Reset attempt counter for a fresh backoff sequence
-            isReconnecting = false;
-            connect();
+            if (activeEntry.isTornDown || activeEntry.isReconnecting) return;
+            activeEntry.attempt = 0;
+            activeEntry.isReconnecting = false;
+            connect(activeEntry);
         },
     };
 }
