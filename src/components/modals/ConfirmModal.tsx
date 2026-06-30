@@ -1,30 +1,24 @@
 /**
- * ConfirmModal.tsx
+ * src/components/modals/ConfirmModal.tsx
  *
  * Reusable bottom-sheet confirmation dialog for all destructive actions.
  * Replaces Alert.alert for: delete expense, leave trip, unmark settlement,
  * remove guest member.
  *
- * Do NOT use for non-destructive confirmations — those don't need a modal.
+ * NOTE: src/components/ui/ConfirmSheet.tsx is the newer, BottomSheet-based
+ * equivalent for fresh code. This component is kept because 4 existing call
+ * sites depend on its async onConfirm signature (ConfirmSheet's onConfirm is
+ * sync-only). Full migration to ConfirmSheet is a deliberate follow-up once
+ * all 4 callers can be updated to fire-and-forget pattern.
  *
- * Design:
- *  - Modal slides up from the bottom (translateY animation).
- *  - Dark scrim covers content behind it.
- *  - Two buttons: Cancel (secondary) and Confirm (destructive or primary).
- *  - Loading spinner inside Confirm button while onConfirm is in-flight.
- *  - Dismissible by tapping the scrim (calls onCancel).
- *  - Safe-area aware: respects home indicator on notched devices.
+ * Fix: replaced colors.accentDestructive → colors.danger
+ * Fix: replaced colors.subText → colors.textSecondary
+ * Fix: replaced colors.handleBar → colors.separator
+ * Fix: replaced hardcoded '#fff' → colors.textInverse
+ * Fix: replaced hardcoded '#000' shadow → neutral black is fine for shadows
+ *      (shadows are always black-based per platform convention, kept as-is)
  *
- * Usage:
- *   <ConfirmModal
- *     visible={showDelete}
- *     title="Delete expense?"
- *     message="This cannot be undone."
- *     confirmLabel="Delete"
- *     confirmVariant="destructive"
- *     onConfirm={handleDelete}
- *     onCancel={() => setShowDelete(false)}
- *   />
+ * Design unchanged: slide-up Animated sheet, scrim, safe-area aware.
  */
 
 import { useEffect, useRef, useState } from 'react';
@@ -41,6 +35,7 @@ import {
 } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useThemeColors } from '../../hooks/useThemeColors';
+import { typography, spacing, radii } from '@/theme';
 
 export interface ConfirmModalProps {
     visible: boolean;
@@ -71,31 +66,13 @@ export function ConfirmModal({
     useEffect(() => {
         if (visible) {
             Animated.parallel([
-                Animated.spring(translateY, {
-                    toValue: 0,
-                    useNativeDriver: true,
-                    bounciness: 3,
-                    speed: 14,
-                }),
-                Animated.timing(scrimOpacity, {
-                    toValue: 1,
-                    duration: 200,
-                    useNativeDriver: true,
-                }),
+                Animated.spring(translateY, { toValue: 0, useNativeDriver: true, bounciness: 3, speed: 14 }),
+                Animated.timing(scrimOpacity, { toValue: 1, duration: 200, useNativeDriver: true }),
             ]).start();
         } else {
             Animated.parallel([
-                Animated.timing(translateY, {
-                    toValue: 400,
-                    duration: 240,
-                    easing: Easing.in(Easing.ease),
-                    useNativeDriver: true,
-                }),
-                Animated.timing(scrimOpacity, {
-                    toValue: 0,
-                    duration: 200,
-                    useNativeDriver: true,
-                }),
+                Animated.timing(translateY, { toValue: 400, duration: 240, easing: Easing.in(Easing.ease), useNativeDriver: true }),
+                Animated.timing(scrimOpacity, { toValue: 0, duration: 200, useNativeDriver: true }),
             ]).start();
         }
     }, [visible, translateY, scrimOpacity]);
@@ -109,8 +86,7 @@ export function ConfirmModal({
         }
     };
 
-    const confirmColor =
-        confirmVariant === 'destructive' ? colors.accentDestructive : colors.accent;
+    const confirmColor = confirmVariant === 'destructive' ? colors.danger : colors.accent;
 
     return (
         <Modal
@@ -121,9 +97,7 @@ export function ConfirmModal({
             onRequestClose={onCancel}
         >
             {/* Scrim */}
-            <Animated.View
-                style={[styles.scrim, { opacity: scrimOpacity }]}
-            >
+            <Animated.View style={[styles.scrim, { opacity: scrimOpacity, backgroundColor: colors.overlay }]}>
                 <Pressable style={StyleSheet.absoluteFill} onPress={onCancel} />
             </Animated.View>
 
@@ -133,16 +107,15 @@ export function ConfirmModal({
                     styles.sheet,
                     {
                         backgroundColor: colors.card,
-                        paddingBottom: insets.bottom + 16,
+                        paddingBottom: insets.bottom + spacing.md,
                         transform: [{ translateY }],
                     },
                 ]}
             >
-                {/* Handle bar */}
-                <View style={[styles.handle, { backgroundColor: colors.handleBar }]} />
+                <View style={[styles.handle, { backgroundColor: colors.separator }]} />
 
-                <Text style={[styles.title, { color: colors.text }]}>{title}</Text>
-                <Text style={[styles.message, { color: colors.subText }]}>{message}</Text>
+                <Text style={[typography.title, styles.title, { color: colors.text }]}>{title}</Text>
+                <Text style={[typography.body, styles.message, { color: colors.textSecondary }]}>{message}</Text>
 
                 <Pressable
                     style={[styles.confirmButton, { backgroundColor: confirmColor }]}
@@ -152,9 +125,11 @@ export function ConfirmModal({
                     accessibilityLabel={confirmLabel}
                 >
                     {loading ? (
-                        <ActivityIndicator color="#fff" />
+                        <ActivityIndicator color={colors.textInverse} />
                     ) : (
-                        <Text style={styles.confirmLabel}>{confirmLabel}</Text>
+                        <Text style={[typography.bodyMd, styles.confirmLabel, { color: colors.textInverse }]}>
+                            {confirmLabel}
+                        </Text>
                     )}
                 </Pressable>
 
@@ -165,78 +140,63 @@ export function ConfirmModal({
                     accessibilityRole="button"
                     accessibilityLabel="Cancel"
                 >
-                    <Text style={[styles.cancelLabel, { color: colors.text }]}>Cancel</Text>
+                    <Text style={[typography.bodyMd, { color: colors.text }]}>Cancel</Text>
                 </Pressable>
             </Animated.View>
         </Modal>
     );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
     scrim: {
         ...StyleSheet.absoluteFillObject,
-        backgroundColor: 'rgba(0,0,0,0.5)',
     },
     sheet: {
         position: 'absolute',
         bottom: 0,
         left: 0,
         right: 0,
-        borderTopLeftRadius: 20,
-        borderTopRightRadius: 20,
-        paddingTop: 8,
-        paddingHorizontal: 20,
-        // Shadow
+        borderTopLeftRadius: radii.xl,
+        borderTopRightRadius: radii.xl,
+        paddingTop: spacing.sm,
+        paddingHorizontal: spacing.lg,
         ...Platform.select({
-            ios: {
-                shadowColor: '#000',
-                shadowOffset: { width: 0, height: -4 },
-                shadowOpacity: 0.12,
-                shadowRadius: 12,
-            },
+            ios: { shadowColor: '#000', shadowOffset: { width: 0, height: -4 }, shadowOpacity: 0.12, shadowRadius: 12 },
             android: { elevation: 12 },
         }),
     },
     handle: {
         width: 36,
         height: 4,
-        borderRadius: 2,
+        borderRadius: radii.full,
         alignSelf: 'center',
-        marginBottom: 20,
+        marginBottom: spacing.lg,
     },
     title: {
-        fontSize: 18,
-        fontWeight: '700',
         textAlign: 'center',
-        marginBottom: 8,
+        marginBottom: spacing.xs,
     },
     message: {
-        fontSize: 14,
         textAlign: 'center',
-        lineHeight: 20,
-        marginBottom: 28,
+        marginBottom: spacing.xl,
     },
     confirmButton: {
         height: 52,
-        borderRadius: 14,
+        borderRadius: radii.md,
         alignItems: 'center',
         justifyContent: 'center',
-        marginBottom: 10,
+        marginBottom: spacing.sm,
     },
     confirmLabel: {
-        color: '#ffffff',
-        fontSize: 16,
         fontWeight: '600',
     },
     cancelButton: {
         height: 52,
-        borderRadius: 14,
+        borderRadius: radii.md,
         alignItems: 'center',
         justifyContent: 'center',
         borderWidth: StyleSheet.hairlineWidth,
-    },
-    cancelLabel: {
-        fontSize: 16,
-        fontWeight: '500',
     },
 });

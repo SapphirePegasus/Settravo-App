@@ -207,6 +207,12 @@ export default function TabsLayout() {
                         }}
                     />
                 )}
+
+                {/* ── Profile — hidden from tab bar, accessible via header ── */}
+                <Tabs.Screen
+                    name="profile"
+                    options={{ href: null }} // removes from tab bar; navigated to via router
+                />
             </Tabs>
 
             {/* FAB sheet — rendered outside Tabs so it overlays all tabs */}

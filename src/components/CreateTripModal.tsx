@@ -171,7 +171,7 @@ export function CreateTripModal({ onClose, onCreated }: Props) {
                         {loading ? (
                             <ActivityIndicator color="#fff" />
                         ) : (
-                            <Text style={styles.createText}>Create</Text>
+                            <Text style={[styles.createText, { color: colors.textInverse }]}>Create</Text>
                         )}
                     </Pressable>
                 </View>
@@ -214,5 +214,7 @@ const styles = StyleSheet.create({
         justifyContent: 'center',
     },
     buttonDisabled: { opacity: 0.45 },
-    createText: { color: '#fff', ...typography.bodyMd, fontWeight: '600' },
+    // Note: textInverse (#fff) is intentional here — white text on accent button.
+    // Applied inline via colors.textInverse in the component.
+    createText: { ...typography.bodyMd, fontWeight: '600' },
 });

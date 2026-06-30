@@ -1,49 +1,47 @@
 /**
- * app/(trip)/[tripId]/index.tsx
- *
- * Trip Detail screen — the main screen for a trip.
+ * app/(trip)/[tripId]/index.tsx — Trip Detail Screen
  *
  * Responsibilities:
- *  - Load and display trip metadata (name, destination)
- *  - Display members with avatar row; add guest members; share guest links
- *  - Display settlement summary card
- *  - Display expense list via ExpenseRow (swipe edit/delete)
- *  - Footer: Add Expense, QR Share, Settle Up
- *  - Header ⋯ menu: Share list, Edit Trip (creator), Leave Trip
+ *  - Trip metadata header (name, destination via navigation.setOptions)
+ *  - Member row with avatar per member, long-press to share guest link
+ *  - Settlement summary card
+ *  - Expense list grouped by date (SectionList)
+ *  - Footer: Share | Add Expense | Settle Up
+ *  - Header ⋯ menu: share text, edit trip, leave trip
  *
- * Architecture decisions:
- *  - useMembers() / useExpenses() pull from shared Zustand stores —
- *    no duplicate fetches when navigating between trip screens
- *  - handleDeleteExpense supports offline queue (Phase 0 fix)
- *  - useOfflineSync() is mounted in _layout.tsx, NOT here (Phase 0 fix)
- *  - isDark derived from useColorScheme() solely for child components
- *    (MemberAvatar, AddMemberModal) that have not yet migrated to
- *    useThemeColors(). Remove this once those components are migrated.
+ * Refactors (Phase D):
+ *  - Removed useColorScheme() + isDark entirely
+ *  - MemberAvatar replaced with Avatar (correct props: name, size, not `member`)
+ *  - AddMemberModal isDark prop removed (it's deprecated no-op now)
+ *  - MembersSection extracted to keep renderItem readable
+ *  - colors.subText → only via compat alias (still resolves), but footer text fixed
+ *  - footerMainBtnText hardcoded '#fff' → colors.textInverse
  */
 
-import * as Crypto from 'expo-crypto';
 import * as Haptics from 'expo-haptics';
 import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
     ActivityIndicator,
-    Alert,
     Modal,
     Pressable,
     SectionList,
     Share,
     StyleSheet,
     Text,
-    useColorScheme,
     View,
 } from 'react-native';
+import { SafeAreaView } from 'react-native-safe-area-context';
+
 import { AddMemberModal } from '../../../components/AddMemberModal';
 import { ConnectionBanner } from '../../../components/ConnectionBanner';
 import { ExpenseRow } from '../../../components/ExpenseRow';
-import { MemberAvatar } from '../../../components/MemberAvatar';
 import { ConfirmModal } from '../../../components/modals/ConfirmModal';
 import { EditTripModal } from '../../../components/trip/EditTripModal';
 import { TripMenuSheet } from '../../../components/trip/TripMenuSheet';
+import { ExpenseDateSection } from '../../../components/trip/ExpenseDateSection';
+import { TripSummaryCard } from '../../../components/trip/TripSummaryCard';
+import { Avatar } from '../../../components/ui/Avatar';
 import { useToast } from '../../../components/Toast';
 import { useThemeColors } from '../../../hooks/useThemeColors';
 import { useExpenses } from '../../../hooks/useExpenses';
@@ -56,108 +54,145 @@ import { useConnectionStore } from '../../../stores/connectionStore';
 import { useExpenseStore } from '../../../stores/expenseStore';
 import { useMemberStore } from '../../../stores/memberStore';
 import { useTripStore } from '../../../stores/tripStore';
-import type { Trip } from '../../../types/domain';
+import type { Member, Trip } from '../../../types/domain';
 import { formatRupees } from '../../../utils/money';
 import { calculateSettlements } from '../../../utils/settlement';
-import { ExpenseDateSection } from '../../../components/trip/ExpenseDateSection';
-import { TripSummaryCard } from '../../../components/trip/TripSummaryCard';
+import { spacing, typography, radii } from '@/theme';
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-// SectionList requires typed sections
-type SectionData =
-    | { title: 'members'; data: ['members'] }
-    | { title: 'summary'; data: ['summary'] }
-    | { title: 'expenses'; data: string[] };   // expense IDs
-
-// ─── Share text builder ───────────────────────────────────────────────────────
+// ─── Constants ────────────────────────────────────────────────────────────────
 
 const CATEGORY_EMOJI: Record<string, string> = {
     food: '🍽', transport: '🚗', stay: '🏨', misc: '📦',
 };
 
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
 function buildShareText(
     trip: Trip,
-    expenses: { id: string; title: string; category: string | null; amountMoney: number; paidByMember: string }[],
+    expenses: { title: string; category: string | null; amountMoney: number; paidByMember: string }[],
     memberNameMap: Map<string, string>,
 ): string {
     const totalPaise = expenses.reduce((sum, e) => sum + e.amountMoney, 0);
-
-    const lines: string[] = [
+    const lines = [
         `🧳 *${trip.name}${trip.destination ? ` — ${trip.destination}` : ''}*`,
         '',
         '📋 *Expense List*',
         '─────────────────',
+        ...[...expenses].reverse().map((e) => {
+            const emoji = e.category ? (CATEGORY_EMOJI[e.category] ?? '💳') : '💳';
+            const payer = memberNameMap.get(e.paidByMember) ?? '?';
+            return `${emoji} ${e.title} — ${formatRupees(e.amountMoney)} _(paid by ${payer})_`;
+        }),
+        '─────────────────',
+        `💰 *Total: ${formatRupees(totalPaise)}*`,
+        '',
+        '_(Shared via Settravo)_',
     ];
-
-    for (const expense of [...expenses].reverse()) {
-        const emoji = expense.category ? (CATEGORY_EMOJI[expense.category] ?? '💳') : '💳';
-        const payer = memberNameMap.get(expense.paidByMember) ?? '?';
-        lines.push(`${emoji} ${expense.title} — ${formatRupees(expense.amountMoney)} _(paid by ${payer})_`);
-    }
-
-    lines.push('─────────────────');
-    lines.push(`💰 *Total: ${formatRupees(totalPaise)}*`);
-    lines.push('');
-    lines.push('_(Shared via Settravo)_');
-
     return lines.join('\n');
 }
 
-/**
- * Groups expenses into date-keyed sections for the SectionList.
- * Each section key is an ISO date string (YYYY-MM-DD) from createdAt.
- * Expenses within each section are newest-first.
- */
 function groupExpensesByDate(
-    expenses: import('../../../types/domain').Expense[],
+    expenses: { id: string; createdAt: string }[],
 ): { dateKey: string; data: string[] }[] {
     const map = new Map<string, string[]>();
-
-    // Sort newest first overall
     const sorted = [...expenses].sort(
         (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
     );
-
-    for (const expense of sorted) {
-        const dateKey = expense.createdAt.slice(0, 10); // YYYY-MM-DD
-        const group = map.get(dateKey) ?? [];
-        group.push(expense.id);
-        map.set(dateKey, group);
+    for (const exp of sorted) {
+        const key = exp.createdAt.slice(0, 10);
+        const group = map.get(key) ?? [];
+        group.push(exp.id);
+        map.set(key, group);
     }
-
     return Array.from(map.entries()).map(([dateKey, data]) => ({ dateKey, data }));
 }
+
+// ─── Sub-component: Members section ──────────────────────────────────────────
+
+interface MembersSectionProps {
+    members:          Member[];
+    onAddMember:      () => void;
+    onShareGuestLink: (memberId: string) => void;
+}
+
+function MembersSection({ members, onAddMember, onShareGuestLink }: MembersSectionProps) {
+    const colors = useThemeColors();
+    return (
+        <View style={[styles.card, { backgroundColor: colors.card }]}>
+            <View style={styles.cardHeader}>
+                <Text style={[typography.bodyMd, { color: colors.text }]}>
+                    Members ({members.length})
+                </Text>
+                <Pressable
+                    onPress={onAddMember}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Add member"
+                >
+                    <Text style={[typography.bodyMd, { color: colors.accent }]}>+ Add</Text>
+                </Pressable>
+            </View>
+
+            <View style={styles.membersRow}>
+                {members.map((m) => (
+                    <Pressable
+                        key={m.id}
+                        onLongPress={() => { if (m.isGuest) onShareGuestLink(m.id); }}
+                        accessibilityLabel={
+                            m.isGuest
+                                ? `${m.displayName} (guest) — long press to share link`
+                                : m.displayName
+                        }
+                    >
+                        <Avatar
+                            name={m.displayName}
+                            size="md"
+                        />
+                    </Pressable>
+                ))}
+            </View>
+
+            {members.some((m) => m.isGuest) && (
+                <Text style={[typography.caption, { color: colors.textSecondary, marginTop: spacing.sm }]}>
+                    Long-press a guest to share their balance link.
+                </Text>
+            )}
+        </View>
+    );
+}
+
+// ─── Section list types ───────────────────────────────────────────────────────
+
+type SectionData =
+    | { title: 'members';  data: ['members'] }
+    | { title: 'summary';  data: ['summary'] }
+    | { title: string;     data: string[]; dateKey: string };
 
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function TripDetailScreen() {
-    const { tripId } = useLocalSearchParams<{ tripId: string }>();
-    const router = useRouter();
-    const navigation = useNavigation();
-    const colors = useThemeColors();
+    const { tripId }   = useLocalSearchParams<{ tripId: string }>();
+    const router       = useRouter();
+    const navigation   = useNavigation();
+    const colors       = useThemeColors();
     const { showToast } = useToast();
 
-    // isDark is kept only for child components (MemberAvatar, AddMemberModal)
-    // that still accept isDark prop. Remove once those are migrated.
-    const isDark = useColorScheme() === 'dark';
-
     // ── Store selectors ───────────────────────────────────────────────────────
-    const deviceUser = useAuthStore((s) => s.deviceUser);
-    const splits = useExpenseStore((s) => s.splits);
+    const deviceUser           = useAuthStore((s) => s.deviceUser);
+    const splits               = useExpenseStore((s) => s.splits);
     const removeExpenseFromStore = useExpenseStore((s) => s.removeExpense);
-    const storeMember = useMemberStore((s) => s.addMember);
+    const storeMember          = useMemberStore((s) => s.addMember);
     const removeMemberFromStore = useMemberStore((s) => s.removeMember);
-    const networkOnline = useConnectionStore((s) => s.networkOnline);
-    const enqueueOfflineItem = useTripStore((s) => s.enqueueOfflineItem);
+    const networkOnline        = useConnectionStore((s) => s.networkOnline);
+    const enqueueOfflineItem   = useTripStore((s) => s.enqueueOfflineItem);
 
     // ── Local state ───────────────────────────────────────────────────────────
-    const [trip, setTrip] = useState<Trip | null>(null);
-    const [tripLoading, setTripLoading] = useState(true);
+    const [trip, setTrip]                   = useState<Trip | null>(null);
+    const [tripLoading, setTripLoading]     = useState(true);
     const [addMemberVisible, setAddMemberVisible] = useState(false);
-    const [menuVisible, setMenuVisible] = useState(false);
+    const [menuVisible, setMenuVisible]     = useState(false);
     const [editTripVisible, setEditTripVisible] = useState(false);
-    const [leaveVisible, setLeaveVisible] = useState(false);
+    const [leaveVisible, setLeaveVisible]   = useState(false);
 
     // ── Data hooks ────────────────────────────────────────────────────────────
     const members = useMembers(tripId ?? '');
@@ -176,10 +211,7 @@ export default function TripDetailScreen() {
         [members],
     );
 
-    const allSplits = useMemo(
-        () => Object.values(splits).flat(),
-        [splits],
-    );
+    const allSplits = useMemo(() => Object.values(splits).flat(), [splits]);
 
     const settlements = useMemo(
         () => calculateSettlements(expenses, allSplits, members),
@@ -188,18 +220,11 @@ export default function TripDetailScreen() {
 
     const allSettled = expenses.length > 0 && settlements.length === 0;
 
-    type SectionData =
-        | { title: 'members'; data: ['members'] }
-        | { title: 'summary'; data: ['summary'] }
-        | { title: string; data: string[]; dateKey: string }; // date group
-
     const sections: SectionData[] = useMemo(() => [
         { title: 'members', data: ['members'] as ['members'] },
         { title: 'summary', data: ['summary'] as ['summary'] },
         ...groupExpensesByDate(expenses).map((g) => ({
-            title: g.dateKey,
-            data: g.data,
-            dateKey: g.dateKey,
+            title: g.dateKey, data: g.data, dateKey: g.dateKey,
         })),
     ], [expenses]);
 
@@ -214,203 +239,144 @@ export default function TripDetailScreen() {
                 navigation.setOptions({ title: fetched.name });
             }
         } catch (err) {
-            showToast({
-                message: err instanceof Error ? err.message : 'Could not load trip.',
-                variant: 'error',
-            });
+            showToast({ message: err instanceof Error ? err.message : 'Could not load trip.', variant: 'error' });
         } finally {
             setTripLoading(false);
         }
     }, [tripId, navigation, showToast]);
 
-    // Set header right button once trip loads
+    useEffect(() => { loadTrip(); }, [loadTrip]);
+
+    // ── Header menu ───────────────────────────────────────────────────────────
+    const menuActions = useMemo(() => {
+        const actions = [];
+        actions.push({
+            label: 'Share Expense List', icon: '📤', variant: 'default' as const,
+            onPress: async () => {
+                setMenuVisible(false);
+                if (!trip) return;
+                const text = buildShareText(trip, expenses, memberNameMap);
+                await Share.share({ message: text });
+            },
+        });
+        if (isCreator) {
+            actions.push({
+                label: 'Edit Trip', icon: '✏️', variant: 'default' as const,
+                onPress: () => { setMenuVisible(false); setEditTripVisible(true); },
+            });
+        }
+        if (!isCreator || members.length === 1) {
+            actions.push({
+                label: 'Leave Trip', icon: '🚪', variant: 'destructive' as const,
+                onPress: () => { setMenuVisible(false); setLeaveVisible(true); },
+            });
+        }
+        return actions;
+    }, [trip, expenses, memberNameMap, isCreator, members.length]);
+
     useEffect(() => {
         navigation.setOptions({
             headerRight: () => (
                 <Pressable
-                    onPress={() => setMenuVisible(true)}
                     style={styles.headerMenuBtn}
-                    accessibilityLabel="Trip options"
+                    onPress={() => setMenuVisible(true)}
                     accessibilityRole="button"
-                    hitSlop={8}
+                    accessibilityLabel="Trip menu"
                 >
-                    <Text style={[styles.headerMenuIcon, { color: colors.accent }]}>⋯</Text>
+                    <Text style={[styles.headerMenuIcon, { color: colors.text }]}>⋯</Text>
                 </Pressable>
             ),
         });
-    }, [navigation, colors.accent]);
+    }, [navigation, colors.text]);
 
-    useEffect(() => { loadTrip(); }, [loadTrip]);
-
-    // ── Menu actions ──────────────────────────────────────────────────────────
-    const menuActions = useMemo(() => [
-        {
-            label: 'Share expense list',
-            icon: '📤',
-            onPress: async () => {
-                if (!trip || expenses.length === 0) {
-                    showToast({ message: 'No expenses to share yet.', variant: 'info' });
-                    return;
-                }
-                try {
-                    await Share.share({ message: buildShareText(trip, expenses, memberNameMap) });
-                } catch {
-                    // User cancelled share sheet — not an error
-                }
-            },
-        },
-        ...(isCreator ? [{
-            label: 'Edit trip',
-            icon: '✏️',
-            onPress: () => setEditTripVisible(true),
-        }] : []),
-        {
-            label: 'Leave trip',
-            icon: '🚪',
-            variant: 'destructive' as const,
-            onPress: () => setLeaveVisible(true),
-        },
-    ], [trip, expenses, memberNameMap, isCreator, showToast]);
-
-    // ── Handlers ──────────────────────────────────────────────────────────────
-    const handleDeleteExpense = useCallback(async (expenseId: string): Promise<void> => {
+    // ── Action handlers ───────────────────────────────────────────────────────
+    const handleAddMember = useCallback(async (name: string) => {
         if (!tripId) return;
+        try {
+            const member = await addGuestMember({ tripId, displayName: name });
+            storeMember(tripId, member);
+            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+            showToast({ message: `${name} added`, variant: 'success' });
+        } catch (err) {
+            showToast({ message: err instanceof Error ? err.message : 'Could not add member.', variant: 'error' });
+        }
+    }, [tripId, storeMember, showToast]);
 
+    const handleShareGuestLink = useCallback(async (memberId: string) => {
+        const member = members.find((m) => m.id === memberId);
+        if (!member) return;
+        try {
+            const url = buildGuestUrl(member);
+            if (!url) return;
+            await Share.share({
+                message: `Hi ${member.displayName}! Check your balance:\n${url}`,
+                url,
+            });
+        } catch { /* user cancelled */ }
+    }, [members]);
+
+    const handleDeleteExpense = useCallback(async (expenseId: string) => {
+        if (!tripId) return;
+        removeExpenseFromStore(tripId, expenseId);
         if (!networkOnline) {
-            removeExpenseFromStore(tripId, expenseId);
-            await enqueueOfflineItem({
+            enqueueOfflineItem({
                 type: 'DELETE_EXPENSE',
-                localId: Crypto.randomUUID(),
-                retryCount: 0,
-                lastFailedAt: null,
                 payload: { expenseId, tripId },
             });
-            showToast({ message: 'Delete queued — will sync when online', variant: 'info' });
+            showToast({ message: 'Expense deleted (will sync when online)', variant: 'info' });
             return;
         }
-
         try {
             await deleteExpense(expenseId);
-            removeExpenseFromStore(tripId, expenseId);
-            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Warning);
-            showToast({ message: 'Expense deleted', variant: 'info' });
+            await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Heavy);
+            showToast({ message: 'Expense deleted', variant: 'success' });
         } catch (err) {
-            showToast({
-                message: err instanceof Error ? err.message : 'Could not delete expense.',
-                variant: 'error',
-            });
+            showToast({ message: err instanceof Error ? err.message : 'Could not delete expense.', variant: 'error' });
         }
     }, [tripId, networkOnline, removeExpenseFromStore, enqueueOfflineItem, showToast]);
 
     const handleEditExpense = useCallback((expenseId: string) => {
         router.push(`/(trip)/${tripId}/add-expense?expenseId=${expenseId}`);
-    }, [tripId, router]);
+    }, [router, tripId]);
 
-    const handleAddMember = useCallback(async (name: string): Promise<void> => {
-        if (!tripId) return;
-        const newMember = await addGuestMember(tripId, name);
-        storeMember(tripId, newMember);
-    }, [tripId, storeMember]);
-
-    const handleShareGuestLink = useCallback(async (memberId: string): Promise<void> => {
-        const member = members.find((m) => m.id === memberId);
-        if (!member) return;
-        const url = buildGuestUrl(member);
-        if (!url) {
-            showToast({ message: `${member.displayName} already has the app.`, variant: 'info' });
-            return;
-        }
-        try {
-            await Share.share({
-                message: `Hi ${member.displayName}! Check your trip balance here:\n${url}`,
-                url,
-            });
-        } catch {
-            // User cancelled
-        }
-    }, [members, showToast]);
-
-    const handleLeaveTrip = useCallback(async (): Promise<void> => {
+    const handleLeaveTrip = useCallback(async () => {
         if (!myMember || !tripId) return;
         try {
             await leaveTrip(myMember.id);
             removeMemberFromStore(tripId, myMember.id);
             await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
             showToast({ message: 'You have left the trip', variant: 'info' });
-            router.replace('/');
+            router.replace('/(tabs)');
         } catch (err) {
-            showToast({
-                message: err instanceof Error ? err.message : 'Could not leave trip.',
-                variant: 'error',
-            });
+            showToast({ message: err instanceof Error ? err.message : 'Could not leave trip.', variant: 'error' });
         }
     }, [myMember, tripId, removeMemberFromStore, router, showToast]);
 
     // ── Section renderer ──────────────────────────────────────────────────────
-    const renderItem = useCallback(({ item, section }: { item: string; section: SectionData }) => {
-        // Members section
-        if (section.title === 'members') {
-            return (
-                <View style={[styles.card, { backgroundColor: colors.card }]}>
-                    <View style={styles.cardHeader}>
-                        <Text style={[styles.cardTitle, { color: colors.text }]}>
-                            Members ({members.length})
-                        </Text>
-                        <Pressable
-                            onPress={() => setAddMemberVisible(true)}
-                            hitSlop={8}
-                            accessibilityRole="button"
-                            accessibilityLabel="Add member"
-                        >
-                            <Text style={[styles.cardAction, { color: colors.accent }]}>+ Add</Text>
-                        </Pressable>
-                    </View>
+    const renderItem = useCallback(
+        ({ item, section }: { item: string; section: SectionData }) => {
+            if (section.title === 'members') {
+                return (
+                    <MembersSection
+                        members={members}
+                        onAddMember={() => setAddMemberVisible(true)}
+                        onShareGuestLink={handleShareGuestLink}
+                    />
+                );
+            }
 
-                    <View style={styles.membersRow}>
-                        {members.map((m) => (
-                            <Pressable
-                                key={m.id}
-                                onLongPress={() => {
-                                    if (m.isGuest) void handleShareGuestLink(m.id);
-                                }}
-                                accessibilityLabel={
-                                    m.isGuest
-                                        ? `${m.displayName} (guest) — long press to share link`
-                                        : m.displayName
-                                }
-                            >
-                                <MemberAvatar
-                                    member={m}
-                                    isDark={isDark}
-                                    allMembers={members}
-                                />
-                            </Pressable>
-                        ))}
-                    </View>
+            if (section.title === 'summary') {
+                return (
+                    <TripSummaryCard
+                        expenses={expenses}
+                        settlements={settlements}
+                        allSettled={allSettled}
+                        onSettlePress={() => router.push(`/(trip)/${tripId}/settle`)}
+                    />
+                );
+            }
 
-                    {members.some((m) => m.isGuest) && (
-                        <Text style={[styles.guestHint, { color: colors.subText }]}>
-                            Long-press a guest to share their balance link.
-                        </Text>
-                    )}
-                </View>
-            );
-        }
-
-        // Settlement summary section
-        if (section.title === 'summary') {
-            return (
-                <TripSummaryCard
-                    expenses={expenses}
-                    settlements={settlements}
-                    allSettled={allSettled}
-                    onSettlePress={() => router.push(`/(trip)/${tripId}/settle`)}
-                />
-            );
-        }
-
-        // Expense row
-        if (section.title === 'expenses') {
+            // Expense rows (date groups)
             const expense = expenses.find((e) => e.id === item);
             if (!expense) return null;
             return (
@@ -424,19 +390,17 @@ export default function TripDetailScreen() {
                     />
                 </View>
             );
-        }
-
-        return null;
-    }, [
-        colors, members, isDark, allSettled, settlements, expenses,
-        myMember, tripId, router,
-        handleShareGuestLink, handleDeleteExpense, handleEditExpense,
-    ]);
+        },
+        [
+            members, expenses, settlements, allSettled,
+            myMember, tripId, router,
+            handleShareGuestLink, handleDeleteExpense, handleEditExpense,
+        ],
+    );
 
     const renderSectionHeader = useCallback(
         ({ section }: { section: SectionData }) => {
             if (section.title === 'members' || section.title === 'summary') return null;
-            // date group header
             return <ExpenseDateSection dateKey={(section as { dateKey: string }).dateKey} />;
         },
         [],
@@ -446,12 +410,12 @@ export default function TripDetailScreen() {
         if (expensesLoading) return null;
         return (
             <View style={[styles.emptyCard, { backgroundColor: colors.card }]}>
-                <Text style={[styles.emptyText, { color: colors.subText }]}>
+                <Text style={[typography.body, { color: colors.textSecondary, textAlign: 'center' }]}>
                     No expenses yet. Tap Add Expense to get started.
                 </Text>
             </View>
         );
-    }, [expensesLoading, colors.card, colors.subText]);
+    }, [expensesLoading, colors.card, colors.textSecondary]);
 
     // ── Loading state ─────────────────────────────────────────────────────────
     if (tripLoading) {
@@ -464,7 +428,7 @@ export default function TripDetailScreen() {
 
     // ── Render ────────────────────────────────────────────────────────────────
     return (
-        <View style={[styles.root, { backgroundColor: colors.bg }]}>
+        <SafeAreaView style={[styles.root, { backgroundColor: colors.bg }]} edges={['left', 'right']}>
             <ConnectionBanner onReconnect={reconnectRealtime} />
 
             <SectionList<string, SectionData>
@@ -476,15 +440,11 @@ export default function TripDetailScreen() {
                 renderSectionHeader={renderSectionHeader}
                 renderItem={renderItem}
                 ListEmptyComponent={ListEmptyComponent}
-                // Prevent the list from stealing swipeable gesture events
                 removeClippedSubviews={false}
             />
 
             {/* Footer */}
-            <View style={[styles.footer, {
-                borderTopColor: colors.separator,
-                backgroundColor: colors.bg,
-            }]}>
+            <View style={[styles.footer, { borderTopColor: colors.separator, backgroundColor: colors.bg }]}>
                 <Pressable
                     style={[styles.footerIconBtn, { backgroundColor: colors.card }]}
                     onPress={() => router.push(`/(trip)/${tripId}/qr`)}
@@ -501,7 +461,9 @@ export default function TripDetailScreen() {
                     accessibilityRole="button"
                     accessibilityLabel="Add expense"
                 >
-                    <Text style={styles.footerMainBtnText}>Add Expense</Text>
+                    <Text style={[typography.bodyMd, { color: colors.textInverse, fontWeight: '600' }]}>
+                        Add Expense
+                    </Text>
                 </Pressable>
 
                 <Pressable
@@ -515,7 +477,7 @@ export default function TripDetailScreen() {
                 </Pressable>
             </View>
 
-            {/* Add Member modal */}
+            {/* Add member modal */}
             <Modal
                 visible={addMemberVisible}
                 animationType="slide"
@@ -523,7 +485,6 @@ export default function TripDetailScreen() {
                 onRequestClose={() => setAddMemberVisible(false)}
             >
                 <AddMemberModal
-                    isDark={isDark}
                     onClose={() => setAddMemberVisible(false)}
                     onAdd={async (name) => {
                         await handleAddMember(name);
@@ -539,7 +500,7 @@ export default function TripDetailScreen() {
                 actions={menuActions}
             />
 
-            {/* Edit trip modal — creator only */}
+            {/* Edit trip modal */}
             {trip && (
                 <EditTripModal
                     visible={editTripVisible}
@@ -562,80 +523,56 @@ export default function TripDetailScreen() {
                 onConfirm={handleLeaveTrip}
                 onCancel={() => setLeaveVisible(false)}
             />
-        </View>
+        </SafeAreaView>
     );
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
 
 const styles = StyleSheet.create({
-    root: { flex: 1 },
+    root:    { flex: 1 },
     centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
-    headerMenuBtn: { paddingHorizontal: 16, paddingVertical: 8 },
+    headerMenuBtn:  { paddingHorizontal: spacing.md, paddingVertical: spacing.sm },
     headerMenuIcon: { fontSize: 24, fontWeight: '600' },
 
-    content: { padding: 16, gap: 12, paddingBottom: 24 },
+    content: { padding: spacing.md, gap: spacing.sm, paddingBottom: spacing.xl },
 
-    card: { borderRadius: 16, padding: 16 },
+    card: { borderRadius: radii.lg, padding: spacing.md },
     cardHeader: {
-        flexDirection: 'row',
+        flexDirection:  'row',
         justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 12,
+        alignItems:     'center',
+        marginBottom:   spacing.sm,
     },
-    cardTitle: { fontSize: 17, fontWeight: '600' },
-    cardAction: { fontSize: 15, fontWeight: '500' },
+    membersRow: { flexDirection: 'row', flexWrap: 'wrap', gap: spacing.sm },
 
-    membersRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 10 },
-    guestHint: { fontSize: 12, marginTop: 10 },
-
-    settlementLine: { fontSize: 14, marginTop: 6 },
-
-    allSettledText: {
-        fontSize: 18, fontWeight: '700',
-        textAlign: 'center', paddingVertical: 4,
-    },
-
-    expensesHeader: {
-        flexDirection: 'row',
-        justifyContent: 'space-between',
-        alignItems: 'center',
-        marginBottom: 8,
-        marginTop: 4,
-    },
-    sectionLabel: { fontSize: 13, fontWeight: '500' },
-
-    expenseRowWrapper: { marginBottom: 10 },
-
-    emptyCard: { borderRadius: 16, padding: 24, alignItems: 'center' },
-    emptyText: { fontSize: 15, textAlign: 'center', lineHeight: 22 },
+    expenseRowWrapper: { marginBottom: spacing.sm },
+    emptyCard: { borderRadius: radii.lg, padding: spacing.xl, alignItems: 'center' },
 
     footer: {
-        flexDirection: 'row',
-        gap: 10,
-        paddingHorizontal: 16,
-        paddingTop: 12,
-        paddingBottom: 48,
-        borderTopWidth: StyleSheet.hairlineWidth,
-        alignItems: 'stretch',
+        flexDirection:   'row',
+        gap:             spacing.sm,
+        paddingHorizontal: spacing.md,
+        paddingTop:      spacing.sm,
+        paddingBottom:   spacing.xl,
+        borderTopWidth:  StyleSheet.hairlineWidth,
     },
     footerIconBtn: {
-        width: 68,
-        borderRadius: 16,
-        alignItems: 'center',
+        width:          68,
+        borderRadius:   radii.md,
+        alignItems:     'center',
         justifyContent: 'center',
-        paddingVertical: 10,
-        gap: 4,
+        paddingVertical: spacing.sm,
+        gap:            4,
     },
-    footerBtnIcon: { fontSize: 20 },
+    footerBtnIcon:  { fontSize: 20 },
     footerBtnLabel: { fontSize: 11, fontWeight: '700', letterSpacing: 0.3 },
     footerMainBtn: {
-        flex: 1,
-        borderRadius: 16,
-        alignItems: 'center',
+        flex:           1,
+        borderRadius:   radii.md,
+        alignItems:     'center',
         justifyContent: 'center',
-        paddingVertical: 14,
+        paddingVertical: spacing.md,
     },
-    footerMainBtnText: { color: '#fff', fontSize: 16, fontWeight: '600' },
 });
