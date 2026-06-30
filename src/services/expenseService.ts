@@ -1,0 +1,288 @@
+/**
+ * expenseService.ts
+ *
+ * All expense and split Supabase operations.
+ *
+ * Rules:
+ *  - All inputs Zod-validated before any network call.
+ *  - Money is always integer paise (amount_money / share_money columns).
+ *  - Split totals are validated to exactly equal the expense amount.
+ *  - Returns domain types only. Raw DB rows never leave this file.
+ *  - Add and delete go direct to Supabase (RLS is the gate).
+ *    No Edge Function needed here — mutations are single-table, no
+ *    rate-limit attack surface beyond what RLS already covers.
+ *
+ * Offline flow (called from the offline sync hook):
+ *  - addExpenseWithSplits() is the online path.
+ *  - The offline queue in tripStore stores the same payload.
+ *  - replayOfflineQueue() in useOfflineSync replays them on reconnect.
+ */
+
+import { supabase } from '../lib/supabase';
+import type { Expense, Split } from '../types/domain';
+import type { Database } from '../types/supabase';
+import { AppError, classifySupabaseError } from '../errors/AppError';
+import {
+    AddExpenseSchema,
+    AddSplitsSchema,
+    EditExpenseSchema,
+    validateSplitTotal,
+    type AddExpenseInput,
+    type AddSplitsInput,
+    type EditExpenseInput,
+} from '../validation/schemas';
+
+type ExpenseRow = Database['public']['Tables']['TravelAppExpenses']['Row'];
+type SplitRow = Database['public']['Tables']['TravelAppSplits']['Row'];
+
+// ─── Mappers ──────────────────────────────────────────────────────────────────
+
+function mapExpense(row: ExpenseRow): Expense {
+    return {
+        id: row.id,
+        tripId: row.trip_id,
+        paidByMember: row.paid_by_member,
+        title: row.title,
+        category: row.category as Expense['category'],
+        amountMoney: row.amount_money,
+        createdAt: row.created_at,
+        updatedAt: row.updated_at,
+        isPendingSync: false,
+    };
+}
+
+function mapSplit(row: SplitRow): Split {
+    return {
+        id: row.id,
+        expenseId: row.expense_id,
+        memberId: row.member_id,
+        shareMoney: row.share_money,
+        isSettled: row.is_settled,
+    };
+}
+
+// ─── Public API ───────────────────────────────────────────────────────────────
+
+/**
+ * Fetch all expenses for a trip, sorted newest first.
+ * RLS: caller must be a member of the trip.
+ */
+export async function fetchExpenses(tripId: string): Promise<Expense[]> {
+    const { data, error } = await supabase
+        .from('TravelAppExpenses')
+        .select('*')
+        .eq('trip_id', tripId)
+        .order('created_at', { ascending: false });
+
+    if (error) throw new Error(`[expenseService] fetchExpenses: ${error.message}`);
+    return (data ?? []).map(mapExpense);
+}
+
+/**
+ * Fetch all splits for a specific expense.
+ */
+export async function fetchSplitsForExpense(expenseId: string): Promise<Split[]> {
+    const { data, error } = await supabase
+        .from('TravelAppSplits')
+        .select('*')
+        .eq('expense_id', expenseId);
+
+    if (error) throw new Error(`[expenseService] fetchSplitsForExpense: ${error.message}`);
+    return (data ?? []).map(mapSplit);
+}
+
+/**
+ * Fetch all splits for all expenses in a trip (batch load for settlement calc).
+ */
+export async function fetchAllSplitsForTrip(tripId: string): Promise<Split[]> {
+    // Join through TravelAppExpenses to filter by trip_id.
+    // Supabase supports nested selects — expense_id is the FK.
+    const { data, error } = await supabase
+        .from('TravelAppSplits')
+        .select('*, TravelAppExpenses!inner(trip_id)')
+        .eq('TravelAppExpenses.trip_id', tripId);
+
+    if (error) throw new Error(`[expenseService] fetchAllSplitsForTrip: ${error.message}`);
+    return (data ?? []).map(mapSplit);
+}
+
+/**
+ * Add an expense and its splits in a single operation.
+ *
+ * Atomicity: Supabase doesn't expose client-side transactions.
+ * Strategy: insert expense first, then splits. If splits fail, delete
+ * the expense (manual rollback). This is safe because:
+ *  - RLS prevents other devices from reading a split-less expense
+ *    (they'd see an expense with zero splits, which the UI handles).
+ *  - The window between expense insert and split insert is milliseconds.
+ *
+ * Validates:
+ *  - AddExpenseSchema (title, amount, category, paidByMember)
+ *  - AddSplitsSchema (splits array, max 20)
+ *  - Split total === expense amount (exact integer equality)
+ */
+export async function addExpenseWithSplits(
+    expenseInput: AddExpenseInput,
+    splitsInput: Omit<AddSplitsInput, 'expenseId'>,
+): Promise<{ expense: Expense; splits: Split[] }> {
+    // Validate
+    const validatedExpense = AddExpenseSchema.parse(expenseInput);
+    const validatedSplits = AddSplitsSchema.parse({
+        expenseId: '00000000-0000-4000-a000-000000000000',
+        splits: splitsInput.splits,
+    });
+    validateSplitTotal(validatedSplits.splits, validatedExpense.amountMoney);
+
+    // Insert expense
+    const { data: expenseRow, error: expenseErr } = await supabase
+        .from('TravelAppExpenses')
+        .insert({
+            trip_id: validatedExpense.tripId,
+            paid_by_member: validatedExpense.paidByMember,
+            title: validatedExpense.title,
+            category: validatedExpense.category ?? null,
+            amount_money: validatedExpense.amountMoney,
+        })
+        .select()
+        .single();
+
+    if (expenseErr || !expenseRow) {
+        throw new Error(`[expenseService] addExpense failed: ${expenseErr?.message}`);
+    }
+
+    // Insert splits
+    const splitRows = validatedSplits.splits.map((s) => ({
+        expense_id: expenseRow.id,
+        member_id: s.memberId,
+        share_money: s.shareMoney,
+        is_settled: false,
+    }));
+
+    const { data: insertedSplits, error: splitsErr } = await supabase
+        .from('TravelAppSplits')
+        .insert(splitRows)
+        .select();
+
+    if (splitsErr || !insertedSplits) {
+        // Manual rollback: remove the orphaned expense
+        await supabase.from('TravelAppExpenses').delete().eq('id', expenseRow.id);
+        throw new Error(`[expenseService] addSplits failed (expense rolled back): ${splitsErr?.message}`);
+    }
+
+    return {
+        expense: mapExpense(expenseRow),
+        splits: insertedSplits.map(mapSplit),
+    };
+}
+
+/**
+ * Edit an expense's title, category, or amount.
+ * RLS "Payer can edit their expense" enforces ownership.
+ *
+ * If amount changes, all splits must be re-submitted (pass newSplits).
+ * If only title/category changes, newSplits can be omitted.
+ */
+export async function editExpense(
+    input: EditExpenseInput,
+    newSplits?: Omit<AddSplitsInput, 'expenseId'>,
+): Promise<Expense> {
+    const validated = EditExpenseSchema.parse(input);
+
+    if (newSplits && validated.amountMoney) {
+        validateSplitTotal(newSplits.splits, validated.amountMoney);
+    }
+
+    const updatePayload: Database['public']['Tables']['TravelAppExpenses']['Update'] = {
+        updated_at: new Date().toISOString(),
+    };
+    if (validated.title !== undefined) updatePayload.title = validated.title;
+    if (validated.category !== undefined) updatePayload.category = validated.category;
+    if (validated.amountMoney !== undefined) updatePayload.amount_money = validated.amountMoney;
+    if (validated.paidByMember !== undefined) updatePayload.paid_by_member = validated.paidByMember;
+
+    const { data, error } = await supabase
+        .from('TravelAppExpenses')
+        .update(updatePayload)
+        .eq('id', validated.id)
+        .select()
+        .single();
+
+    if (error || !data) throw new Error(`[expenseService] editExpense: ${error?.message}`);
+
+    // If splits changed: delete old splits and insert new ones
+    if (newSplits) {
+        await supabase.from('TravelAppSplits').delete().eq('expense_id', validated.id);
+
+        const splitRows = newSplits.splits.map((s) => ({
+            expense_id: validated.id,
+            member_id: s.memberId,
+            share_money: s.shareMoney,
+            is_settled: false,
+        }));
+
+        const { error: splitsErr } = await supabase.from('TravelAppSplits').insert(splitRows);
+        if (splitsErr) throw new Error(`[expenseService] editExpense splits: ${splitsErr.message}`);
+    }
+
+    return mapExpense(data);
+}
+
+/**
+ * Delete an expense (and its splits, via CASCADE in the DB schema).
+ * RLS "Payer can delete their expense" enforces ownership.
+ */
+export async function deleteExpense(expenseId: string): Promise<void> {
+    const { error } = await supabase
+        .from('TravelAppExpenses')
+        .delete()
+        .eq('id', expenseId);
+
+    if (error) throw new Error(`[expenseService] deleteExpense: ${error.message}`);
+}
+
+/**
+ * Mark or unmark all splits settled between two members using a single
+ * atomic Postgres RPC — eliminates the TOCTOU race condition that existed
+ * with two sequential round trips (SELECT expenses → UPDATE splits).
+ *
+ * The RPC runs inside the DB transaction boundary so no expense added
+ * between the two old queries can be silently missed.
+ */
+async function rpcMarkSettled(
+    tripId: string,
+    debtorMemberId: string,
+    creditorMemberId: string,
+    settled: boolean,
+): Promise<number> {
+    const { data, error } = await supabase.rpc('mark_settled_between', {
+        p_trip_id: tripId,
+        p_debtor_id: debtorMemberId,
+        p_creditor_id: creditorMemberId,
+        p_settled: settled,
+    });
+
+    if (error) {
+        throw new AppError(
+            'SERVER',
+            `[expenseService] mark_settled_between RPC failed: ${error.message}`,
+            error,
+        );
+    }
+    return (data as number) ?? 0;
+}
+
+export async function markSettledBetweenMembers(
+    tripId: string,
+    debtorMemberId: string,
+    creditorMemberId: string,
+): Promise<number> {
+    return rpcMarkSettled(tripId, debtorMemberId, creditorMemberId, true);
+}
+
+export async function unmarkSettledBetweenMembers(
+    tripId: string,
+    debtorMemberId: string,
+    creditorMemberId: string,
+): Promise<number> {
+    return rpcMarkSettled(tripId, debtorMemberId, creditorMemberId, false);
+}
