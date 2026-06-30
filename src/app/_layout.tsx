@@ -20,7 +20,7 @@ import * as Sentry from '@sentry/react-native';
 import NetInfo from '@react-native-community/netinfo';
 import { Redirect, SplashScreen, Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
@@ -152,10 +152,12 @@ function RootLayoutInner() {
     // destabilized @react-navigation's useSyncState and produced:
     //   "Maximum update depth exceeded" — infinite re-render loop.
     // An empty <Stack> with only screenOptions is the correct, stable pattern.
+    const rootScreenOptions = useMemo(() => ({ headerShown: false }), []);
+
     return (
         <>
             <StatusBar style={colors.statusBarStyle} />
-            <Stack screenOptions={{ headerShown: false }} />
+            <Stack screenOptions={rootScreenOptions} />
         </>
     );
 }

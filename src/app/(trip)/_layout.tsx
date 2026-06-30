@@ -10,24 +10,26 @@
  */
 
 import { Stack } from 'expo-router';
+import { useMemo } from 'react';
 import { useColorScheme } from 'react-native';
 
 export default function TripGroupLayout() {
     const isDark = useColorScheme() === 'dark';
 
-    return (
-        <Stack
-            screenOptions={{
-                headerShown: false,
-                headerStyle: {
-                    backgroundColor: isDark ? '#1c1c1e' : '#f2f2f7',
-                },
-                headerTintColor: isDark ? '#ffffff' : '#000000',
-                headerShadowVisible: false,
-                contentStyle: {
-                    backgroundColor: isDark ? '#000000' : '#f2f2f7',
-                },
-            }}
-        />
+    const screenOptions = useMemo(
+        () => ({
+            headerShown: false,
+            headerStyle: {
+                backgroundColor: isDark ? '#1c1c1e' : '#f2f2f7',
+            },
+            headerTintColor: isDark ? '#ffffff' : '#000000',
+            headerShadowVisible: false,
+            contentStyle: {
+                backgroundColor: isDark ? '#000000' : '#f2f2f7',
+            },
+        }),
+        [isDark],
     );
+
+    return <Stack screenOptions={screenOptions} />;
 }

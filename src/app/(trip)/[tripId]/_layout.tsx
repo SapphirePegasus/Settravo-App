@@ -9,64 +9,55 @@
  */
 
 import { Stack } from 'expo-router';
+import { useMemo } from 'react';
 import { useThemeColors } from '@/hooks/useThemeColors';
 
 export default function TripIdLayout() {
     const colors = useThemeColors();
 
-    const headerStyle = {
-        backgroundColor: colors.surface,
-    } as const;
+    const headerStyle = useMemo(
+        () => ({ backgroundColor: colors.surface }) as const,
+        [colors.surface],
+    );
+
+    const screenOptions = useMemo(
+        () => ({
+            headerStyle,
+            headerTintColor: colors.text,
+            headerShadowVisible: false,
+            contentStyle: { backgroundColor: colors.bg },
+        }),
+        [headerStyle, colors.text, colors.bg],
+    );
+
+    const indexOptions = useMemo(
+        () => ({ title: 'Trip', headerBackVisible: false, headerShown: false }),
+        [],
+    );
+    const addExpenseOptions = useMemo(
+        () => ({ title: 'Add Expense', presentation: 'modal' as const, headerShown: false }),
+        [],
+    );
+    const settleOptions = useMemo(
+        () => ({ title: 'Settle Up', headerStyle, headerTintColor: colors.text }),
+        [headerStyle, colors.text],
+    );
+    const qrOptions = useMemo(
+        () => ({ title: 'Share Trip', presentation: 'modal' as const, headerShown: false }),
+        [],
+    );
+    const activityOptions = useMemo(
+        () => ({ title: 'Activity', headerStyle, headerTintColor: colors.text }),
+        [headerStyle, colors.text],
+    );
 
     return (
-        <Stack
-            screenOptions={{
-                headerStyle,
-                headerTintColor: colors.text,
-                headerShadowVisible: false,
-                contentStyle: { backgroundColor: colors.bg },
-            }}
-        >
-            <Stack.Screen
-                name="index"
-                options={{
-                    title: 'Trip',
-                    headerBackVisible: false,
-                    headerShown: false,  // trip screen manages its own header
-                }}
-            />
-            <Stack.Screen
-                name="add-expense"
-                options={{
-                    title: 'Add Expense',
-                    presentation: 'modal',
-                    headerShown: false,
-                }}
-            />
-            <Stack.Screen
-                name="settle"
-                options={{
-                    title: 'Settle Up',
-                    headerStyle,
-                    headerTintColor: colors.text,
-                }}
-            />
-            <Stack.Screen
-                name="qr"
-                options={{
-                    title: 'Share Trip',
-                    presentation: 'modal',
-                    headerShown: false,
-                }}
-            />
-            <Stack.Screen
-                name="activity"
-                options={{
-                    title: 'Activity',
-                    headerStyle,
-                    headerTintColor: colors.text,
-                }}
-            />
+        <Stack screenOptions={screenOptions}>
+            <Stack.Screen name="index" options={indexOptions} />
+            <Stack.Screen name="add-expense" options={addExpenseOptions} />
+            <Stack.Screen name="settle" options={settleOptions} />
+            <Stack.Screen name="qr" options={qrOptions} />
+            <Stack.Screen name="activity" options={activityOptions} />
         </Stack>
     );
 }

@@ -128,44 +128,110 @@ export default function TabsLayout() {
         [handleFabTabPress],
     );
 
+    // FIX (infinite render loop, same root cause as fabListeners above):
+    // <Tabs screenOptions={{...}}> previously received a fresh object literal
+    // on every TabsLayout render. React Navigation resolves descriptor options
+    // from screenOptions for EVERY registered Tabs.Screen (6 of them here), so
+    // an unstable screenOptions reference forces all 6 descriptors to
+    // recompute on every render — not just one screen, like the FAB case.
+    // useSafeAreaInsets() commonly fires 1-2 extra updates right after mount
+    // as the native safe-area measurement settles; each one used to recreate
+    // this object and re-trigger a full descriptor resync via useSyncState,
+    // which is consistent with "Maximum update depth exceeded" tripping
+    // specifically on cold boot, during the Tab Navigator's first commit.
+    // Memoizing on the actual primitives used closes that loop the same way
+    // fabListeners does for the single FAB screen.
+    const tabsScreenOptions = useMemo(
+        () => ({
+            headerShown: false,
+            tabBarActiveTintColor: colors.accent,
+            tabBarInactiveTintColor: colors.icon,
+            tabBarStyle: {
+                backgroundColor: colors.surface,
+                borderTopColor: colors.separator,
+                borderTopWidth: StyleSheet.hairlineWidth,
+                height: 56 + insets.bottom,
+                paddingBottom: insets.bottom,
+            },
+            tabBarShowLabel: false,
+        }),
+        [colors.accent, colors.icon, colors.surface, colors.separator, insets.bottom],
+    );
+
+    // FIX (same instability class, now closing every remaining gap): each
+    // Tabs.Screen's `options` prop was ALSO a fresh object literal per render,
+    // each containing an inline tabBarIcon arrow function. React Navigation's
+    // Screen wrapper re-registers descriptor options via an internal layout
+    // effect whenever this reference changes — for 6 screens, every render.
+    // Stable renderer functions (useCallback) + memoized options objects
+    // close this off completely.
+    const renderHomeIcon = useCallback(
+        ({ focused, color }: { focused: boolean; color: string }) => (
+            <TabIcon emoji="🏠" label="Home" focused={focused} color={color} />
+        ),
+        [],
+    );
+    const renderGroupsIcon = useCallback(
+        ({ focused, color }: { focused: boolean; color: string }) => (
+            <TabIcon emoji="👥" label="Groups" focused={focused} color={color} />
+        ),
+        [],
+    );
+    const renderActivityIcon = useCallback(
+        ({ focused, color }: { focused: boolean; color: string }) => (
+            <TabIcon emoji="📋" label="Activity" focused={focused} color={color} />
+        ),
+        [],
+    );
+    const renderStatisticsIcon = useCallback(
+        ({ focused, color }: { focused: boolean; color: string }) => (
+            <TabIcon emoji="📊" label="Stats" focused={focused} color={color} />
+        ),
+        [],
+    );
+    const renderFabButton = useCallback(
+        () => <FABButton onPress={() => setFabVisible(true)} accentColor={colors.accent} />,
+        [colors.accent],
+    );
+
+    const homeOptions = useMemo(
+        () => ({ tabBarIcon: renderHomeIcon, tabBarAccessibilityLabel: 'Home tab' }),
+        [renderHomeIcon],
+    );
+    const groupsOptions = useMemo(
+        () => ({ tabBarIcon: renderGroupsIcon, tabBarAccessibilityLabel: 'Groups tab' }),
+        [renderGroupsIcon],
+    );
+    const fabOptions = useMemo(
+        () => ({ tabBarButton: renderFabButton, tabBarAccessibilityLabel: 'Create new' }),
+        [renderFabButton],
+    );
+    const activityOptions = useMemo(
+        () => ({ tabBarIcon: renderActivityIcon, tabBarAccessibilityLabel: 'Activity tab' }),
+        [renderActivityIcon],
+    );
+    const statisticsOptions = useMemo(
+        () => ({ tabBarIcon: renderStatisticsIcon, tabBarAccessibilityLabel: 'Stats tab' }),
+        [renderStatisticsIcon],
+    );
+    const profileOptions = useMemo(() => ({ href: null }), []);
+
     return (
         <>
             <Tabs
-                screenOptions={{
-                    headerShown: false,
-                    tabBarActiveTintColor: colors.accent,
-                    tabBarInactiveTintColor: colors.icon,
-                    tabBarStyle: {
-                        backgroundColor: colors.surface,
-                        borderTopColor: colors.separator,
-                        borderTopWidth: StyleSheet.hairlineWidth,
-                        height: 56 + insets.bottom,
-                        paddingBottom: insets.bottom,
-                    },
-                    tabBarShowLabel: false,
-                }}
+                screenOptions={tabsScreenOptions}
             >
                 {/* ── Home ──────────────────────────────────────────────── */}
                 <Tabs.Screen
                     name="index"
-                    options={{
-                        tabBarIcon: ({ focused, color }) => (
-                            <TabIcon emoji="🏠" label="Home" focused={focused} color={color} />
-                        ),
-                        tabBarAccessibilityLabel: 'Home tab',
-                    }}
+                    options={homeOptions}
                 />
 
                 {/* ── Groups ────────────────────────────────────────────── */}
                 {FEATURES.TAB_GROUPS && (
                     <Tabs.Screen
                         name="groups"
-                        options={{
-                            tabBarIcon: ({ focused, color }) => (
-                                <TabIcon emoji="👥" label="Groups" focused={focused} color={color} />
-                            ),
-                            tabBarAccessibilityLabel: 'Groups tab',
-                        }}
+                        options={groupsOptions}
                     />
                 )}
 
@@ -175,27 +241,14 @@ export default function TabsLayout() {
                 <Tabs.Screen
                     name="_fab"
                     listeners={fabListeners}
-                    options={{
-                        tabBarButton: () => (
-                            <FABButton
-                                onPress={() => setFabVisible(true)}
-                                accentColor={colors.accent}
-                            />
-                        ),
-                        tabBarAccessibilityLabel: 'Create new',
-                    }}
+                    options={fabOptions}
                 />
 
                 {/* ── Activity ──────────────────────────────────────────── */}
                 {FEATURES.TAB_ACTIVITY && (
                     <Tabs.Screen
                         name="activity"
-                        options={{
-                            tabBarIcon: ({ focused, color }) => (
-                                <TabIcon emoji="📋" label="Activity" focused={focused} color={color} />
-                            ),
-                            tabBarAccessibilityLabel: 'Activity tab',
-                        }}
+                        options={activityOptions}
                     />
                 )}
 
@@ -203,19 +256,14 @@ export default function TabsLayout() {
                 {FEATURES.TAB_STATISTICS && (
                     <Tabs.Screen
                         name="statistics"
-                        options={{
-                            tabBarIcon: ({ focused, color }) => (
-                                <TabIcon emoji="📊" label="Stats" focused={focused} color={color} />
-                            ),
-                            tabBarAccessibilityLabel: 'Statistics tab',
-                        }}
+                        options={statisticsOptions}
                     />
                 )}
 
                 {/* ── Profile — hidden from tab bar, accessible via header ── */}
                 <Tabs.Screen
                     name="profile"
-                    options={{ href: null }}
+                    options={profileOptions}
                 />
             </Tabs>
 

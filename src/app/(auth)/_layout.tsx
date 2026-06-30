@@ -10,18 +10,20 @@
  */
 
 import { Stack } from 'expo-router';
+import { useMemo } from 'react';
 import { useThemeColors } from '@/hooks/useThemeColors';
 
 export default function AuthGroupLayout() {
     const colors = useThemeColors();
 
-    return (
-        <Stack
-            screenOptions={{
-                headerShown: false,
-                contentStyle: { backgroundColor: colors.bg },
-                animation: 'fade',
-            }}
-        />
+    const screenOptions = useMemo(
+        () => ({
+            headerShown: false,
+            contentStyle: { backgroundColor: colors.bg },
+            animation: 'fade' as const,
+        }),
+        [colors.bg],
     );
+
+    return <Stack screenOptions={screenOptions} />;
 }

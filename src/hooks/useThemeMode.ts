@@ -18,7 +18,7 @@
  *   Key chars: alphanumeric, '.', '-', '_' only.
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useColorScheme } from 'react-native';
 import * as SecureStore from 'expo-secure-store';
 
@@ -127,5 +127,18 @@ export function useThemeMode(): UseThemeModeReturn {
         }
     }, []);
 
-    return { mode, preference, setPreference, isLoading };
+    // FIX (infinite render loop): this hook previously returned a brand-new
+    // object literal on every render. ThemeProvider's `value` useMemo depends
+    // on this return value by reference, so an unmemoized object defeats that
+    // memoization completely — every render of useThemeMode (including the
+    // unrelated daynight tick) forces ThemeProvider's context value to change,
+    // which re-renders every consumer in the tree, some of which set state in
+    // response, re-triggering this provider. React's nested-update guard then
+    // throws "Maximum update depth exceeded". Memoizing on the primitive
+    // outputs makes this object referentially stable when nothing meaningful
+    // changed.
+    return useMemo<UseThemeModeReturn>(
+        () => ({ mode, preference, setPreference, isLoading }),
+        [mode, preference, setPreference, isLoading],
+    );
 }

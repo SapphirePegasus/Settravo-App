@@ -73,6 +73,14 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
         };
     }, [themeMode.mode, accentColor.preset]);
 
+    // DEFENSE IN DEPTH: depend on the specific primitives consumed here, not
+    // on `themeMode`/`accentColor` as whole objects. Even though those hooks
+    // now return memoized objects (see useThemeMode.ts / useAccentColor.ts),
+    // depending on object identity here is fragile — adding an unrelated
+    // field to either hook's return type in the future would change the
+    // object's reference on every render again and silently reintroduce the
+    // "Maximum update depth exceeded" crash. Primitive deps make this memo
+    // correct regardless of what those hooks return.
     const value = useMemo<ThemeContextValue>(
         () => ({
             colors,
@@ -84,7 +92,17 @@ export function ThemeProvider({ children }: ThemeProviderProps) {
             setAccent: accentColor.setAccent,
             isLoading: themeMode.isLoading || accentColor.isLoading,
         }),
-        [colors, themeMode, accentColor],
+        [
+            colors,
+            themeMode.mode,
+            themeMode.preference,
+            themeMode.setPreference,
+            accentColor.preset,
+            accentColor.accentId,
+            accentColor.setAccent,
+            themeMode.isLoading,
+            accentColor.isLoading,
+        ],
     );
 
     return (

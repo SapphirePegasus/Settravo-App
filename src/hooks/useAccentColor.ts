@@ -11,7 +11,7 @@
  *   - Do NOT call directly in screens — consume via useThemeContext().
  */
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import * as SecureStore from 'expo-secure-store';
 import {
     AccentPreset,
@@ -68,10 +68,15 @@ export function useAccentColor(): UseAccentColorReturn {
         }
     }, []);
 
-    return {
-        preset: getAccentPreset(accentId),
-        accentId,
-        setAccent,
-        isLoading,
-    };
+    // getAccentPreset() does an array .find() — the AccentPreset objects it
+    // returns ARE stable (ACCENT_PRESETS is a module-level const), but calling
+    // .find() fresh on every render plus wrapping it in a new return object
+    // literal still breaks ThemeContext's `value` memoization downstream (see
+    // useThemeMode.ts FIX comment for the full failure chain). Memoize both.
+    const preset = useMemo(() => getAccentPreset(accentId), [accentId]);
+
+    return useMemo<UseAccentColorReturn>(
+        () => ({ preset, accentId, setAccent, isLoading }),
+        [preset, accentId, setAccent, isLoading],
+    );
 }
