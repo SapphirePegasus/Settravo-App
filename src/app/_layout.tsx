@@ -18,7 +18,7 @@
 
 import * as Sentry from '@sentry/react-native';
 import NetInfo from '@react-native-community/netinfo';
-import { Redirect, SplashScreen, Stack } from 'expo-router';
+import { SplashScreen, Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useMemo } from 'react';
 import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
@@ -111,6 +111,15 @@ function RootLayoutInner() {
 
     useEffect(() => { hideSplash(); }, [hideSplash]);
 
+    // FIX (Rules of Hooks violation): this hook must run unconditionally on
+    // every render of this component instance. It was previously declared
+    // after the `!isReady` / `initError` early returns, meaning it was
+    // skipped during the loading phase and only started firing once auth
+    // resolved — a different hook count for the same component instance
+    // across its lifetime, which is undefined behavior in React and a
+    // plausible contributor to render instability under concurrent rendering.
+    const rootScreenOptions = useMemo(() => ({ headerShown: false }), []);
+
     // ── Loading state ─────────────────────────────────────────────────────────
     if (!isReady) {
         return (
@@ -137,27 +146,35 @@ function RootLayoutInner() {
         );
     }
 
-    // ── Auth gate ─────────────────────────────────────────────────────────────
-    // No user at all → onboarding.
-    // User with no display name → onboarding (name entry step).
-    if (!deviceUser || deviceUser.displayName === null) {
-        return <Redirect href="/(auth)/onboarding" />;
-    }
-
     // ── Main navigation ───────────────────────────────────────────────────────
-    // Do NOT manually declare <Stack.Screen name="(auth)" /> etc. here.
-    // Expo Router auto-registers route groups from the filesystem. Manually
-    // re-declaring them alongside the conditional <Redirect> above caused the
-    // navigator's internal screen list to change every render, which
-    // destabilized @react-navigation's useSyncState and produced:
-    //   "Maximum update depth exceeded" — infinite re-render loop.
-    // An empty <Stack> with only screenOptions is the correct, stable pattern.
-    const rootScreenOptions = useMemo(() => ({ headerShown: false }), []);
+    // FIX (root cause of the infinite "Maximum update depth exceeded" loop):
+    // The previous implementation rendered <Redirect href="/(auth)/onboarding" />
+    // conditionally based on auth state, with a bare <Stack screenOptions={...} />
+    // (no children) relying on filesystem auto-registration. This is the LEGACY
+    // pre-SDK-53 authentication pattern. Per Expo's current docs
+    // (docs.expo.dev/router/advanced/authentication), this exact pattern —
+    // Redirect rendered conditionally inside the navigator's render path,
+    // interacting with the auto-registered screen list — is independently
+    // reported to destabilize @react-navigation's useSyncState across multiple
+    // expo-router versions, producing unkillable forceStoreRerender loops.
+    // The supported, stable replacement is Stack.Protected with declarative
+    // guards: screens are always registered (auto-discovery still applies to
+    // anything not explicitly listed), and the navigator itself decides which
+    // branch is reachable — no render-time Redirect, no list mutation.
+    const isAuthenticated = !!deviceUser && deviceUser.displayName !== null;
 
     return (
         <>
             <StatusBar style={colors.statusBarStyle} />
-            <Stack screenOptions={rootScreenOptions} />
+            <Stack screenOptions={rootScreenOptions}>
+                <Stack.Protected guard={isAuthenticated}>
+                    <Stack.Screen name="(tabs)" />
+                    <Stack.Screen name="(trip)" />
+                </Stack.Protected>
+                <Stack.Protected guard={!isAuthenticated}>
+                    <Stack.Screen name="(auth)" />
+                </Stack.Protected>
+            </Stack>
         </>
     );
 }
