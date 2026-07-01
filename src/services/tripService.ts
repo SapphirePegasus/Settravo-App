@@ -57,6 +57,10 @@ function mapTrip(row: TripRow): Trip {
         createdAt: row.created_at,
         joinCode: row.join_code,
         joinCodeExpiresAt: row.join_code_expires_at,
+        // cover_image_url may not yet be in the generated Supabase types;
+        // the defensive cast keeps the app compilable before 'supabase gen types'
+        // is re-run after the column migration is applied.
+        coverImageUrl: (row as Record<string, unknown>).cover_image_url as string | null ?? null,
     };
 }
 
@@ -246,6 +250,7 @@ export async function regenerateJoinCode(tripId: string): Promise<Trip> {
         .update({
             join_code: generateJoinCode(),
             join_code_expires_at: generateExpiresAt(),
+            cover_image_url: null,
         })
         .eq('id', tripId)
         .select()

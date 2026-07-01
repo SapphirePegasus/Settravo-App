@@ -90,12 +90,25 @@ export default function JoinScreen() {
 
     return (
         <SafeAreaView style={[styles.root, { backgroundColor: colors.bg }]} edges={['top', 'left', 'right']}>
+            {/* Header */}
+            <View style={[styles.header, { borderBottomColor: colors.separator }]}>
+                <Pressable
+                    style={styles.headerBtn}
+                    onPress={() => router.back()}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Go back"
+                >
+                    <Icon name="header.back" size={24} color={colors.accent} />
+                </Pressable>
+                <Text style={[typography.bodyMd, { color: colors.text, flex: 1, textAlign: 'center' }]}>
+                    Join a Group
+                </Text>
+                <View style={styles.headerBtn} />
+            </View>
+
             <KeyboardAvoidingView style={styles.flex} behavior={Platform.OS === 'ios' ? 'padding' : 'height'}>
                 <View style={styles.content}>
-                    <Text style={[typography.heading, { color: colors.text }]}>Join a Group</Text>
-                    <Text style={[typography.body, { color: colors.textSecondary, marginTop: spacing.sm, marginBottom: spacing.xl }]}>
-                        Scan the QR code from the trip creator, or type the 4-character code.
-                    </Text>
 
                     {/* QR scan button */}
                     <Pressable
@@ -167,7 +180,7 @@ export default function JoinScreen() {
                             <ActivityIndicator color="#FFFFFF" />
                         ) : (
                             <Text style={[typography.bodyMd, { color: colors.textInverse, fontWeight: '600' }]}>
-                                Join Group
+                                Join Trip
                             </Text>
                         )}
                     </Pressable>
@@ -180,7 +193,15 @@ export default function JoinScreen() {
 const styles = StyleSheet.create({
     root: { flex: 1 },
     flex: { flex: 1 },
-    content: { flex: 1, padding: spacing.lg, paddingTop: spacing.xl },
+    header: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: spacing.xs,
+        paddingVertical: spacing.sm,
+        borderBottomWidth: StyleSheet.hairlineWidth,
+    },
+    headerBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+    content: { flex: 1, padding: spacing.lg, paddingTop: spacing.lg },
     scanButton: {
         flexDirection: 'row',
         alignItems: 'center',

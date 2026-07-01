@@ -39,7 +39,91 @@ export async function setTripCoverFromUrl(tripId: string, imageUrl: string): Pro
     }
 }
 
-// ─── User upload ──────────────────────────────────────────────────────────────
+// ─── Stock image download + Supabase upload ───────────────────────────────────
+
+/**
+ * Downloads a stock image URL via our controlled fetch() (which can send
+ * proper headers that the Image component cannot), then uploads it to
+ * Supabase Storage under the same trip-covers bucket as user uploads.
+ *
+ * WHY this exists instead of setTripCoverFromUrl():
+ *  - Pixabay and similar providers use CDN hotlink protection that rejects
+ *    direct Image source requests from mobile apps (no Referer/User-Agent).
+ *    Our fetch() can set a browser-like User-Agent that bypasses this.
+ *  - Storing raw third-party CDN URLs is fragile: URLs may expire, change, or
+ *    become unavailable. Uploading to our own Supabase bucket gives us full
+ *    control and consistent availability.
+ *  - Both user uploads and stock images then share the same Supabase public
+ *    URL format — consistent, cacheable, and provider-agnostic.
+ *
+ * @param tripId       The trip to attach the cover to.
+ * @param stockImageUrl The fullUrl from StockImageResult (e.g. Pixabay webformatURL).
+ */
+export async function downloadAndUploadStockImage(
+    tripId: string,
+    stockImageUrl: string,
+): Promise<string> {
+    // 1. Download the stock image via our controlled fetch.
+    //    A browser-like User-Agent is required to pass Pixabay CDN hotlink
+    //    guards that reject non-browser requests. The 10 s timeout prevents
+    //    the operation hanging indefinitely on slow connections.
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10_000);
+
+    let response: Response;
+    try {
+        response = await fetch(stockImageUrl, {
+            signal: controller.signal,
+            headers: {
+                'User-Agent':
+                    'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 ' +
+                    '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
+                'Accept': 'image/webp,image/avif,image/*,*/*;q=0.8',
+            },
+        });
+    } finally {
+        clearTimeout(timeoutId);
+    }
+
+    if (!response.ok) {
+        throw new Error(
+            `[tripImageService] downloadAndUploadStockImage: HTTP ${response.status} ` +
+            `downloading ${stockImageUrl}`,
+        );
+    }
+
+    // 2. Read into binary buffer.
+    const blob = await response.blob();
+    const arrayBuffer = await new Response(blob).arrayBuffer();
+
+    // 3. Derive content type and file extension.
+    //    Pixabay webformat URLs typically serve JPEG. Fallback gracefully.
+    const contentType = blob.type || response.headers.get('content-type') || 'image/jpeg';
+    const rawExt = contentType.split('/')[1] ?? 'jpg';
+    const ext = rawExt === 'jpeg' ? 'jpg' : rawExt;
+
+    // 4. Upload to trip-covers bucket under a collision-free path.
+    const fileName = `${tripId}/${Crypto.randomUUID()}.${ext}`;
+
+    const { error: uploadError } = await supabase.storage
+        .from(STORAGE_BUCKET)
+        .upload(fileName, arrayBuffer, { contentType, upsert: false });
+
+    if (uploadError) {
+        throw new Error(
+            `[tripImageService] downloadAndUploadStockImage: upload failed: ${uploadError.message}`,
+        );
+    }
+
+    // 5. Resolve and persist the Supabase public URL.
+    const { data: publicUrlData } = supabase.storage
+        .from(STORAGE_BUCKET)
+        .getPublicUrl(fileName);
+
+    const publicUrl = publicUrlData.publicUrl;
+    await setTripCoverFromUrl(tripId, publicUrl);
+    return publicUrl;
+}
 
 /**
  * Upload a user-picked image (from expo-image-picker) to Supabase Storage,

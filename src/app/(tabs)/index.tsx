@@ -2,18 +2,18 @@
  * app/(tabs)/index.tsx — Dashboard (Home Tab)
  *
  * Layout (matching design mockup screen 2):
- *   1. Hero image (day/night) with floating header (menu + bell) and
- *      large greeting name — no balance amount on the hero itself.
- *   2. 3-stat card row overlapping hero bottom edge (owed / owe / total).
+ *   1. Hero image with floating header (hamburger left — opens MenuDrawer).
+ *      Bell removed per product decision.
+ *   2. 3-stat card row overlapping hero bottom edge.
  *   3. Recent groups list (max 4) with "View all" link.
- *   4. Empty state when no groups (icon key, no emoji).
- *   5. (Removed) Quick-action row — now handled exclusively by the center FAB.
+ *   4. Empty state when no groups.
  *
- * Design delta fixes applied in this revision:
- *   - Hero now shows greeting + name (large), NOT the net balance number.
- *   - Floating header added: menu icon (left) + notification bell (right).
- *   - EmptyState now receives `iconKey` (not the dead `illustration` emoji prop).
- *   - All emoji replaced with <Icon /> calls from src/config/icons.ts.
+ * HEADER POSITION FIX:
+ *   The heroHeader was previously a regular flex child inside a
+ *   `justifyContent: 'flex-end'` container, so it rendered near the
+ *   bottom of the hero rather than at the top. Fixed by using
+ *   `position: 'absolute'` on the header, detaching it from the flex
+ *   stack so it sits at top: 0 regardless of the parent's flex direction.
  */
 
 import * as Haptics from 'expo-haptics';
@@ -29,14 +29,23 @@ import {
     Text,
     View,
 } from 'react-native';
+import Animated, {
+    useSharedValue,
+    useAnimatedStyle,
+    withTiming,
+    withDelay,
+    Easing,
+} from 'react-native-reanimated';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { ConnectionBanner } from '../../components/ConnectionBanner';
 import { CreateTripModal } from '../../components/CreateTripModal';
+import { MenuDrawer } from '../../components/MenuDrawer';
 import { TripCard } from '../../components/TripCard';
 import { EmptyState } from '../../components/ui/EmptyState';
 import { StatCard } from '../../components/ui/StatCard';
 import { Icon } from '../../components/ui/Icon';
+import { SkeletonTripCard } from '../../components/ui/Skeleton';
 import { useToast } from '../../components/Toast';
 import { useThemeContext } from '@/context/ThemeContext';
 import { useThemeColors } from '../../hooks/useThemeColors';
@@ -65,6 +74,7 @@ export default function DashboardScreen() {
 
     const { trips, isLoading, fetchError, refresh } = useTrips();
     const [createVisible, setCreateVisible] = useState(false);
+    const [menuDrawerVisible, setMenuDrawerVisible] = useState(false);
 
     useEffect(() => {
         if (fetchError) {
@@ -106,6 +116,34 @@ export default function DashboardScreen() {
     const recentTrips = trips.slice(0, MAX_RECENT);
     const displayName = deviceUser?.displayName ?? 'there';
 
+    // ── Entrance animations ──────────────────────────────────────────────────
+    // Stat row slides up + fades in 280ms after mount.
+    // Recent groups section follows 100ms later to create a staggered feel.
+    // Using withTiming (not spring) to match the rest of the sheet-style
+    // transitions used elsewhere; spring here would feel bouncy on a data list.
+    const statOpacity = useSharedValue(0);
+    const statTranslateY = useSharedValue(16);
+    const listOpacity = useSharedValue(0);
+    const listTranslateY = useSharedValue(20);
+
+    useEffect(() => {
+        statOpacity.value = withDelay(120, withTiming(1, { duration: 300, easing: Easing.out(Easing.ease) }));
+        statTranslateY.value = withDelay(120, withTiming(0, { duration: 300, easing: Easing.out(Easing.ease) }));
+        listOpacity.value = withDelay(220, withTiming(1, { duration: 320, easing: Easing.out(Easing.ease) }));
+        listTranslateY.value = withDelay(220, withTiming(0, { duration: 320, easing: Easing.out(Easing.ease) }));
+        // Run once on mount — empty deps is intentional here.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
+    const statAnimStyle = useAnimatedStyle(() => ({
+        opacity: statOpacity.value,
+        transform: [{ translateY: statTranslateY.value }],
+    }));
+    const listAnimStyle = useAnimatedStyle(() => ({
+        opacity: listOpacity.value,
+        transform: [{ translateY: listTranslateY.value }],
+    }));
+
     const handleTripPress = useCallback(async (tripId: string) => {
         await Haptics.selectionAsync();
         router.push(`/(trip)/${tripId}`);
@@ -115,12 +153,6 @@ export default function DashboardScreen() {
         await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
         setCreateVisible(true);
     }, []);
-
-
-    const handleProfile = useCallback(async () => {
-        await Haptics.selectionAsync();
-        router.push('/(tabs)/profile');
-    }, [router]);
 
     return (
         <View style={[styles.root, { backgroundColor: colors.bg }]}>
@@ -134,23 +166,31 @@ export default function DashboardScreen() {
                         onRefresh={refresh}
                         tintColor={colors.accent}
                         colors={[colors.accent]}
+                        progressViewOffset={HERO_HEIGHT}
                     />
                 }
                 contentContainerStyle={{ paddingBottom: spacing.xxl + insets.bottom }}
             >
                 {/* ── Hero ──────────────────────────────────────────────── */}
-                <View>
+                <View style={{ height: HERO_HEIGHT }}>
                     <ImageBackground
                         source={heroSource}
-                        style={[styles.hero, { height: HERO_HEIGHT + insets.top }]}
+                        style={styles.hero}
                         resizeMode="cover"
                     >
                         <View style={styles.heroScrim} />
 
-                        {/* Floating header — menu left, bell right */}
+                        {/* ─ Floating header — ABSOLUTELY POSITIONED at top ─
+                            Previous bug: this was a regular flex child inside
+                            a justifyContent:'flex-end' container, so it
+                            appeared at the bottom of the hero, not the top.
+                            Fix: position:'absolute', top:0 — decoupled from
+                            the flex stack, anchored to the hero's top edge.
+                            SafeAreaView with edges:['top'] adds the correct
+                            status-bar inset without a hardcoded magic number. */}
                         <SafeAreaView edges={['top']} style={styles.heroHeader}>
                             <Pressable
-                                onPress={handleProfile}
+                                onPress={() => setMenuDrawerVisible(true)}
                                 hitSlop={12}
                                 accessibilityLabel="Open menu"
                                 accessibilityRole="button"
@@ -158,18 +198,10 @@ export default function DashboardScreen() {
                             >
                                 <Icon name="header.menu" size={24} color="#FFFFFF" />
                             </Pressable>
-
-                            <Pressable
-                                hitSlop={12}
-                                accessibilityLabel="Notifications"
-                                accessibilityRole="button"
-                                style={styles.heroHeaderBtn}
-                            >
-                                <Icon name="header.notifications" size={24} color="#FFFFFF" />
-                            </Pressable>
+                            {/* Bell icon removed — notifications not yet implemented */}
                         </SafeAreaView>
 
-                        {/* Greeting — name large, as per design */}
+                        {/* Greeting — sits at the bottom of the hero */}
                         <View style={styles.heroContent}>
                             <Text style={styles.heroWelcome}>Welcome back,</Text>
                             <Text style={styles.heroName} numberOfLines={1}>
@@ -178,16 +210,16 @@ export default function DashboardScreen() {
                         </View>
                     </ImageBackground>
 
-                    {/* Stat cards overlap the hero bottom */}
-                    <View style={[styles.statRow, { marginTop: -STAT_OVERLAP }]}>
+                    {/* Stat cards — overlap the hero bottom edge */}
+                    <Animated.View style={[styles.statRow, { marginTop: -STAT_OVERLAP }, statAnimStyle]}>
                         <StatCard label="You are owed" paise={totalOwed} colorRole="owed" />
                         <StatCard label="You owe" paise={totalOwe} colorRole="owe" />
                         <StatCard label="Total spent" paise={totalSpent} colorRole="neutral" />
-                    </View>
+                    </Animated.View>
                 </View>
 
                 {/* ── Recent groups ──────────────────────────────────────── */}
-                <View style={styles.section}>
+                <Animated.View style={[styles.section, listAnimStyle]}>
                     <View style={styles.sectionHeader}>
                         <Text style={[typography.bodyMd, styles.sectionTitle, { color: colors.text }]}>
                             Recent Groups
@@ -211,6 +243,14 @@ export default function DashboardScreen() {
                             actionLabel="Create Group"
                             onAction={handleCreate}
                         />
+                    ) : isLoading && trips.length === 0 ? (
+                        <View style={styles.list}>
+                            {[1, 2, 3].map((k) => (
+                                <View key={k} style={{ borderRadius: radii.lg, overflow: 'hidden' }}>
+                                    <SkeletonTripCard />
+                                </View>
+                            ))}
+                        </View>
                     ) : (
                         <View style={styles.list}>
                             {recentTrips.map((t) => (
@@ -223,10 +263,14 @@ export default function DashboardScreen() {
                             ))}
                         </View>
                     )}
-                </View>
-
-
+                </Animated.View>
             </ScrollView>
+
+            {/* Side-drawer menu — overlays tab bar and content */}
+            <MenuDrawer
+                visible={menuDrawerVisible}
+                onClose={() => setMenuDrawerVisible(false)}
+            />
 
             <Modal
                 visible={createVisible}
@@ -249,22 +293,37 @@ export default function DashboardScreen() {
 const styles = StyleSheet.create({
     root: { flex: 1 },
 
-    // Hero
-    hero: { width: '100%', justifyContent: 'flex-end' },
-    heroScrim: { ...StyleSheet.absoluteFillObject, backgroundColor: 'rgba(0,0,0,0.32)' },
+    // Hero — fixed height, image fills it
+    hero: {
+        ...StyleSheet.absoluteFillObject,
+        justifyContent: 'flex-end',   // heroContent sits at the bottom
+    },
+    heroScrim: {
+        ...StyleSheet.absoluteFillObject,
+        backgroundColor: 'rgba(0,0,0,0.32)',
+    },
+
+    // Header — absolute so it doesn't participate in flex layout,
+    // allowing justifyContent:'flex-end' to only affect heroContent.
     heroHeader: {
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
         flexDirection: 'row',
         justifyContent: 'space-between',
         alignItems: 'center',
         paddingHorizontal: spacing.md,
-        paddingVertical: spacing.sm,
+        paddingVertical: spacing.xs,
     },
     heroHeaderBtn: {
-        width: 40,
-        height: 40,
+        width: 44,
+        height: 44,
         alignItems: 'center',
         justifyContent: 'center',
     },
+
+    // Greeting at hero bottom
     heroContent: {
         paddingHorizontal: spacing.lg,
         paddingBottom: STAT_OVERLAP + spacing.xl,
@@ -281,7 +340,7 @@ const styles = StyleSheet.create({
         letterSpacing: -0.5,
     },
 
-    // Stat row
+    // Stat row — positioned to overlap the hero bottom
     statRow: {
         flexDirection: 'row',
         gap: spacing.sm,
@@ -297,9 +356,5 @@ const styles = StyleSheet.create({
         marginBottom: spacing.md,
     },
     sectionTitle: { fontWeight: '600' },
-
-    // List
     list: { gap: spacing.sm },
-
-
 });

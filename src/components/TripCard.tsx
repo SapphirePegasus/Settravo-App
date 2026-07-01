@@ -2,14 +2,17 @@
  * src/components/TripCard.tsx
  *
  * Trip list card for the Home/Groups screens.
- * Shows icon tile (hash-picked from TRIP_TILE_POOL), name, destination,
- * date range, member count, pending sync badge.
  *
- * All emoji replaced with <Icon /> components.
- * Trip tile pool is configurable in src/config/icons.ts (TRIP_TILE_POOL).
+ * Thumbnail priority:
+ *   1. trip.coverImageUrl — Supabase-hosted cover photo (expo-image, cached)
+ *   2. Icon tile — hash-picked from TRIP_TILE_POOL when no photo set
+ *
+ * Design: 56×56 rounded thumbnail on the left, info column, chevron right.
+ * Memo comparison updated to include coverImageUrl so cover changes re-render.
  */
 
-import React from 'react';
+import { Image } from 'expo-image';
+import React, { useState } from 'react';
 import { Pressable, StyleSheet, Text, View } from 'react-native';
 
 import { Icon } from './ui/Icon';
@@ -30,6 +33,35 @@ function formatDateRange(start: string | null, end: string | null): string | nul
     return `Until ${fmt(end!)}`;
 }
 
+// ─── Thumbnail ────────────────────────────────────────────────────────────────
+
+interface ThumbnailProps {
+    trip: Trip;
+}
+
+function Thumbnail({ trip }: ThumbnailProps) {
+    const colors = useThemeColors();
+    const tileIcon = getTripTileIcon(trip.id);
+    const [imageError, setImageError] = useState(false);
+    const showImage = Boolean(trip.coverImageUrl) && !imageError;
+
+    return (
+        <View style={[styles.thumbnailBox, { backgroundColor: colors.emojiBox }]}>
+            {showImage ? (
+                <Image
+                    source={{ uri: trip.coverImageUrl! }}
+                    style={StyleSheet.absoluteFill}
+                    contentFit="cover"
+                    transition={150}
+                    onError={() => setImageError(true)}
+                />
+            ) : (
+                <Icon name={tileIcon} size={24} color={colors.accent} />
+            )}
+        </View>
+    );
+}
+
 // ─── Props ────────────────────────────────────────────────────────────────────
 
 interface TripCardProps {
@@ -42,7 +74,6 @@ interface TripCardProps {
 
 function TripCardInner({ trip, pendingSyncCount, onPress }: TripCardProps) {
     const colors = useThemeColors();
-    const tileIcon = getTripTileIcon(trip.id);
     const dateLabel = formatDateRange(trip.startDate, trip.endDate);
     const memberCount = useMemberStore((s) => (s.members[trip.id] ?? []).length);
 
@@ -62,16 +93,8 @@ function TripCardInner({ trip, pendingSyncCount, onPress }: TripCardProps) {
             accessibilityLabel={`Open trip: ${trip.name}`}
         >
             <View style={styles.inner}>
-                {/* Tile icon — hash-picked, configurable in icons.ts */}
-                <View style={[styles.iconBox, { backgroundColor: colors.emojiBox }]}>
-                    <Icon
-                        name={tileIcon}
-                        size={26}
-                        color={colors.accent}
-                    />
-                </View>
+                <Thumbnail trip={trip} />
 
-                {/* Info */}
                 <View style={styles.info}>
                     <Text style={[typography.bodyMd, { color: colors.text }]} numberOfLines={1}>
                         {trip.name}
@@ -95,7 +118,6 @@ function TripCardInner({ trip, pendingSyncCount, onPress }: TripCardProps) {
                         </View>
                     ) : null}
 
-                    {/* Badges */}
                     <View style={styles.badgeRow}>
                         {memberCount > 0 && (
                             <View style={[styles.badge, { backgroundColor: colors.subSurface }]}>
@@ -125,6 +147,7 @@ function TripCardInner({ trip, pendingSyncCount, onPress }: TripCardProps) {
 export const TripCard = React.memo(TripCardInner, (prev, next) =>
     prev.trip.id === next.trip.id &&
     prev.trip.name === next.trip.name &&
+    prev.trip.coverImageUrl === next.trip.coverImageUrl &&
     prev.trip.destination === next.trip.destination &&
     prev.trip.startDate === next.trip.startDate &&
     prev.trip.endDate === next.trip.endDate &&
@@ -144,13 +167,14 @@ const styles = StyleSheet.create({
         padding: spacing.md,
         gap: spacing.md,
     },
-    iconBox: {
-        width: 52,
-        height: 52,
+    thumbnailBox: {
+        width: 56,
+        height: 56,
         borderRadius: radii.md,
         alignItems: 'center',
         justifyContent: 'center',
         flexShrink: 0,
+        overflow: 'hidden',      // clips the Image to rounded corners
     },
     info: { flex: 1, minWidth: 0, gap: 3 },
     metaRow: { flexDirection: 'row', alignItems: 'center', gap: 4 },

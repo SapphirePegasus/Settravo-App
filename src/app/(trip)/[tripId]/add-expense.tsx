@@ -11,7 +11,7 @@
 
 import * as Crypto from 'expo-crypto';
 import * as Haptics from 'expo-haptics';
-import { useLocalSearchParams, useNavigation, useRouter } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import {
     ActivityIndicator,
@@ -65,7 +65,6 @@ const EMPTY_SPLITS: Split[] = [];
 export default function AddExpenseScreen() {
     const { tripId, expenseId } = useLocalSearchParams<{ tripId: string; expenseId?: string }>();
     const router = useRouter();
-    const navigation = useNavigation();
     const colors = useThemeColors();
     const { showToast } = useToast();
 
@@ -98,11 +97,6 @@ export default function AddExpenseScreen() {
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
     const [deleteVisible, setDeleteVisible] = useState(false);
-
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    useEffect(() => {
-        navigation.setOptions({ title: isEditMode ? 'Edit Expense' : 'Add Expense' });
-    }, [isEditMode]);
 
     useEffect(() => {
         if (!isEditMode || !existingExpense) return;
@@ -285,8 +279,27 @@ export default function AddExpenseScreen() {
         }
     }, [existingExpense, tripId, showToast, router]);
 
+    const screenTitle = isEditMode ? 'Edit Expense' : 'Add Expense';
+
     return (
-        <>
+        <SafeAreaView style={[styles.screenRoot, { backgroundColor: colors.bg }]} edges={['top', 'bottom']}>
+            {/* Modal header — close button left, title center */}
+            <View style={[styles.modalHeader, { borderBottomColor: colors.separator }]}>
+                <Pressable
+                    style={styles.modalHeaderBtn}
+                    onPress={() => router.back()}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Close"
+                >
+                    <Icon name="action.close" size={22} color={colors.text} />
+                </Pressable>
+                <Text style={[typography.bodyMd, { color: colors.text, flex: 1, textAlign: 'center' }]}>
+                    {screenTitle}
+                </Text>
+                <View style={styles.modalHeaderBtn} />
+            </View>
+
             <KeyboardAvoidingView
                 style={[styles.root, { backgroundColor: colors.bg }]}
                 behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
@@ -520,12 +533,26 @@ export default function AddExpenseScreen() {
                 onConfirm={handleDelete}
                 onCancel={() => setDeleteVisible(false)}
             />
-        </>
+        </SafeAreaView>
     );
 }
 
 const styles = StyleSheet.create({
     root: { flex: 1 },
+    screenRoot: { flex: 1 },
+    modalHeader: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: spacing.xs,
+        paddingVertical: spacing.sm,
+        borderBottomWidth: StyleSheet.hairlineWidth,
+    },
+    modalHeaderBtn: {
+        width: 44,
+        height: 44,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
     guard: { flex: 1, alignItems: 'center', justifyContent: 'center', padding: spacing.xl },
     content: { padding: spacing.md, paddingBottom: spacing.xl },
     offlineBanner: {

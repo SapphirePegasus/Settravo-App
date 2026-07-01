@@ -18,8 +18,15 @@ import type { ImageProvider, ImageSearchOptions, StockImageResult } from './Imag
 const PIXABAY_ENDPOINT = 'https://pixabay.com/api/';
 
 interface PixabayHit {
+    /** Public Pixabay thumbnail (≤150 px wide). No hotlink protection — safe
+     *  to use directly as an Image source in React Native. */
     previewURL: string;
+    /** CDN-resized medium image (≤640 px). May be blocked by geo-variant
+     *  hotlink protection when used as an Image source without a browser
+     *  Referer/session. Use ONLY via a controlled fetch() call — never as a
+     *  direct Image source URI in the app. */
     webformatURL: string;
+    /** Original resolution. Requires user login on Pixabay to download. */
     largeImageURL: string;
     user: string;
     pageURL: string;
@@ -33,8 +40,14 @@ interface PixabayResponse {
 
 function mapHit(hit: PixabayHit): StockImageResult {
     return {
-        previewUrl: hit.webformatURL,
-        fullUrl: hit.largeImageURL,
+        // previewURL: the Pixabay public thumbnail CDN, no auth requirements.
+        // Always safe to pass as <Image source={{ uri }} /> in React Native.
+        previewUrl: hit.previewURL,
+        // webformatURL: used ONLY inside tripImageService.downloadAndUploadStockImage()
+        // via a controlled fetch() with proper User-Agent. Never set directly
+        // as an Image component source — intermittently blocked by Pixabay CDN
+        // hotlink guards that check browser Referer headers.
+        fullUrl: hit.webformatURL,
         attribution: `Image by ${hit.user} on Pixabay`,
         sourceUrl: hit.pageURL,
     };

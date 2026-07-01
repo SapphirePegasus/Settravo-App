@@ -23,7 +23,6 @@ export default function TripIdLayout() {
     const screenOptions = useMemo(
         () => ({
             headerStyle,
-            headerShown: false,
             headerTintColor: colors.text,
             headerShadowVisible: false,
             contentStyle: { backgroundColor: colors.bg },
@@ -40,8 +39,8 @@ export default function TripIdLayout() {
         [],
     );
     const settleOptions = useMemo(
-        () => ({ title: 'Settle Up', headerStyle, headerTintColor: colors.text }),
-        [headerStyle, colors.text],
+        () => ({ title: 'Settle Up', headerShown: false }),
+        [],
     );
     const qrOptions = useMemo(
         () => ({ title: 'Share Trip', presentation: 'modal' as const, headerShown: false }),

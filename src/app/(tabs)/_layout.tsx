@@ -24,7 +24,7 @@
 
 import { Tabs, useRouter, useSegments } from 'expo-router';
 import { useCallback, useMemo, useState } from 'react';
-import { Pressable, StyleSheet, Text, View } from 'react-native';
+import { Pressable, StyleSheet, Text, View, type GestureResponderEvent } from 'react-native';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 import { FEATURES } from '@/config/features';
@@ -62,7 +62,9 @@ function TabIcon({ iconKey, label, focused, color }: TabIconProps) {
 // ─── Center FAB button ────────────────────────────────────────────────────────
 
 type FABButtonProps = {
-    onPress: () => void;
+    /** Mirrors Pressable.onPress — receives the GestureResponderEvent from the
+     *  underlying Pressable so the tab system's onPress bridge can forward it. */
+    onPress: (e: GestureResponderEvent) => void;
     accentColor: string;
 };
 
@@ -200,8 +202,32 @@ export default function TabsLayout() {
         ),
         [],
     );
+    // BUGFIX: renderFabButton was ignoring the tab's built-in `onPress` prop and
+    // always calling `setFabVisible(true)` directly. This bypassed the tab's
+    // native press handler entirely, meaning the `tabPress` listener
+    // (handleFabTabPress) never fired. The FAB always opened the sheet even
+    // when the user was inside a trip — where it should go directly to
+    // add-expense instead.
+    // Fix: pass `props.onPress` through to the FABButton. When called, it runs
+    // the tab's internal handler → fires the `tabPress` event → triggers
+    // handleFabTabPress → which calls e.preventDefault() and routes correctly.
+    //
+    // TYPE NOTE: BottomTabBarButtonProps.onPress (from @react-navigation/bottom-tabs)
+    // is typed as `((e: GestureResponderEvent | MouseEvent<HTMLAnchorElement>) => void) | undefined`.
+    // We build that union locally from react-native and React — no indirect-dep
+    // import needed. FABButton.onPress accepts GestureResponderEvent (from Pressable)
+    // and we forward it; the MouseEvent arm only fires in web/SSR environments.
+    type TabBarOnPress = (
+        e: GestureResponderEvent | React.MouseEvent<HTMLAnchorElement, MouseEvent>,
+    ) => void;
+
     const renderFabButton = useCallback(
-        () => <FABButton onPress={() => setFabVisible(true)} accentColor={colors.accent} />,
+        (props: { onPress?: TabBarOnPress }) => (
+            <FABButton
+                onPress={(e) => props.onPress?.(e)}
+                accentColor={colors.accent}
+            />
+        ),
         [colors.accent],
     );
 
@@ -296,7 +322,7 @@ const styles = StyleSheet.create({
     tabIconContainer: {
         alignItems: 'center',
         justifyContent: 'center',
-        paddingTop: spacing.md,
+        paddingTop: spacing.sm,
         gap: 3,
         minWidth: 56,
     },
@@ -306,7 +332,7 @@ const styles = StyleSheet.create({
         fontWeight: '600',
     },
     fab: {
-        //width: 48,
+        width: 48,
         height: 48,
         alignItems: 'center',
         justifyContent: 'center',

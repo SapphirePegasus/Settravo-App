@@ -1,34 +1,32 @@
 /**
  * src/app/(trip)/_layout.tsx
  *
- * Layout for the (trip) route group. Uses a Stack navigator so screens
- * within the trip flow share back-navigation and header chrome.
- *
- * Route group parentheses mean "(trip)" does NOT appear in the URL path:
- *   app/(trip)/join.tsx     → /join
- *   app/(trip)/[tripId]/    → /[tripId]
+ * Layout for the (trip) route group.
+ * FIXED: was using useColorScheme() + hardcoded hex strings.
+ *        Now uses useThemeColors() — fully token-driven.
  */
 
 import { Stack } from 'expo-router';
 import { useMemo } from 'react';
-import { useColorScheme } from 'react-native';
+import { useThemeColors } from '@/hooks/useThemeColors';
 
 export default function TripGroupLayout() {
-    const isDark = useColorScheme() === 'dark';
+    const colors = useThemeColors();
+
+    const contentStyle = useMemo(
+        () => ({ backgroundColor: colors.bg }) as const,
+        [colors.bg],
+    );
 
     const screenOptions = useMemo(
         () => ({
             headerShown: false,
-            headerStyle: {
-                backgroundColor: isDark ? '#1c1c1e' : '#f2f2f7',
-            },
-            headerTintColor: isDark ? '#ffffff' : '#000000',
+            headerStyle: { backgroundColor: colors.surface },
+            headerTintColor: colors.text,
             headerShadowVisible: false,
-            contentStyle: {
-                backgroundColor: isDark ? '#000000' : '#f2f2f7',
-            },
+            contentStyle,
         }),
-        [isDark],
+        [colors.surface, colors.text, contentStyle],
     );
 
     return <Stack screenOptions={screenOptions} />;

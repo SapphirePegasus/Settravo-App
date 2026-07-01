@@ -2,20 +2,28 @@
  * app/(tabs)/statistics.tsx — Statistics (D.12)
  *
  * 4 sections:
- *   1. Time filter chips
- *   2. Summary cards (Total / Owed / Owe) + Net Settlement
- *   3. Per-group breakdown
- *   4. Spending by category — SVG horizontal bars
+ *   1. Time filter pills
+ *   2. Summary stat cards (Total / Owed / Owe) + Net settlement
+ *   3. Per-group breakdown with progress bars
+ *   4. Spending by category — animated SVG horizontal bars
  *
- * All emoji replaced with <Icon /> or removed.
- * CATEGORY_META.icon (emoji string) replaced with iconKey (IconKey).
+ * Phase E: SVG category bars animate their fill width on mount using
+ * Reanimated's AnimatedProps on a react-native-svg Rect. Each bar
+ * is staggered by 80ms × its index.
  */
 
 import { useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
-import { ScrollView, StyleSheet, Text, View, Pressable } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import Svg, { Rect } from 'react-native-svg';
+import Animated, {
+    useSharedValue,
+    useAnimatedProps,
+    withDelay,
+    withTiming,
+    Easing,
+} from 'react-native-reanimated';
 
 import { Avatar } from '../../components/ui/Avatar';
 import { AmountText } from '../../components/ui/AmountText';
@@ -29,8 +37,19 @@ import { useMemberStore } from '../../stores/memberStore';
 import { useTripStore } from '../../stores/tripStore';
 import type { ExpenseCategory } from '../../types/domain';
 import type { IconKey } from '../../config/icons';
-import { CATEGORY_ICON_MAP } from '../../config/icons';
+import type { ThemeColors } from '../../hooks/useThemeColors';
 import { typography, spacing, radii } from '@/theme';
+
+// ─── Animated SVG component ───────────────────────────────────────────────────
+
+/**
+ * Animated.createAnimatedComponent must be called once at module scope,
+ * not inside a render function. Calling it inside a component or render
+ * creates a new class on every render which React will unmount+remount.
+ */
+const AnimatedRect = Animated.createAnimatedComponent(Rect);
+
+// ─── Types ────────────────────────────────────────────────────────────────────
 
 type TimeFilter = 'month' | '3months' | 'all';
 
@@ -50,17 +69,93 @@ const CATEGORY_META: { value: ExpenseCategory; label: string; iconKey: IconKey }
 const BAR_CHART_WIDTH = 200;
 const BAR_HEIGHT = 20;
 
+// ─── Animated category bar ───────────────────────────────────────────────────
+
+interface AnimatedCategoryBarProps {
+    cat: (typeof CATEGORY_META)[number];
+    value: number;
+    targetBarWidth: number;
+    /** Stagger index — each bar starts 80ms later than the previous. */
+    index: number;
+    colors: ThemeColors;
+}
+
+/**
+ * One SVG row in the category chart. The fill rect animates from 0 to
+ * targetBarWidth on mount using Reanimated's useAnimatedProps + withDelay.
+ *
+ * NOTE: useAnimatedProps requires that the prop it drives (width) is NOT
+ * set via a regular style or prop — it must flow exclusively through
+ * animatedProps. The background rect uses a plain Rect (not animated) to
+ * avoid unnecessary worklet overhead for a static element.
+ */
+function AnimatedCategoryBar({ cat, value, targetBarWidth, index, colors }: AnimatedCategoryBarProps) {
+    const width = useSharedValue(0);
+
+    useEffect(() => {
+        width.value = withDelay(
+            index * 80,
+            withTiming(Math.max(targetBarWidth, targetBarWidth > 0 ? 2 : 0), {
+                duration: 500,
+                easing: Easing.out(Easing.cubic),
+            }),
+        );
+    }, [targetBarWidth, index, width]);
+
+    const animatedProps = useAnimatedProps(() => ({
+        width: width.value,
+    }));
+
+    return (
+        <View style={styles.categoryRow}>
+            <View style={styles.categoryIconWrap}>
+                <Icon name={cat.iconKey} size={18} color={colors.icon} />
+            </View>
+            <Text style={[typography.body, { color: colors.text, width: 72 }]}>
+                {cat.label}
+            </Text>
+            <Svg width={BAR_CHART_WIDTH} height={BAR_HEIGHT}>
+                {/* Background track */}
+                <Rect
+                    x={0} y={2}
+                    width={BAR_CHART_WIDTH} height={BAR_HEIGHT - 4}
+                    rx={4}
+                    fill={colors.separator}
+                />
+                {/* Animated fill */}
+                <AnimatedRect
+                    x={0} y={2}
+                    height={BAR_HEIGHT - 4}
+                    rx={4}
+                    fill={colors.accent}
+                    animatedProps={animatedProps}
+                />
+            </Svg>
+            <Text style={[typography.mono, { color: colors.textSecondary, marginLeft: spacing.sm, width: 52 }]}>
+                {value > 0 ? `₹${(value / 100).toFixed(0)}` : '—'}
+            </Text>
+        </View>
+    );
+}
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
+
 function isWithinFilter(dateIso: string, filter: TimeFilter): boolean {
     if (filter === 'all') return true;
     const date = new Date(dateIso);
     const now = new Date();
     if (filter === 'month') {
-        return date.getFullYear() === now.getFullYear() && date.getMonth() === now.getMonth();
+        return (
+            date.getFullYear() === now.getFullYear() &&
+            date.getMonth() === now.getMonth()
+        );
     }
     const threeMonthsAgo = new Date();
     threeMonthsAgo.setMonth(now.getMonth() - 3);
     return date >= threeMonthsAgo;
 }
+
+// ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function StatisticsScreen() {
     const router = useRouter();
@@ -87,10 +182,15 @@ export default function StatisticsScreen() {
         for (const list of Object.values(filteredByTrip)) {
             for (const exp of list) {
                 spent += exp.amountMoney;
-                const mySplit = flatSplits.find((sp) => sp.expenseId === exp.id && sp.memberId === deviceUser?.id);
+                const mySplit = flatSplits.find(
+                    (sp) => sp.expenseId === exp.id && sp.memberId === deviceUser?.id,
+                );
                 if (mySplit && !mySplit.isSettled) {
-                    if (exp.paidByMember === deviceUser?.id) owed += exp.amountMoney - mySplit.shareMoney;
-                    else owe += mySplit.shareMoney;
+                    if (exp.paidByMember === deviceUser?.id) {
+                        owed += exp.amountMoney - mySplit.shareMoney;
+                    } else {
+                        owe += mySplit.shareMoney;
+                    }
                 }
             }
         }
@@ -106,19 +206,27 @@ export default function StatisticsScreen() {
             const members = allMembers[trip.id] ?? [];
             const flatSplits = Object.values(allSplits).flat();
             let myNet = 0;
+            let mySpend = 0;
             for (const exp of list) {
-                const mySplit = flatSplits.find((sp) => sp.expenseId === exp.id && sp.memberId === deviceUser?.id);
+                if (exp.paidByMember === deviceUser?.id) mySpend += exp.amountMoney;
+                const mySplit = flatSplits.find(
+                    (sp) => sp.expenseId === exp.id && sp.memberId === deviceUser?.id,
+                );
                 if (mySplit && !mySplit.isSettled) {
-                    if (exp.paidByMember === deviceUser?.id) myNet += exp.amountMoney - mySplit.shareMoney;
-                    else myNet -= mySplit.shareMoney;
+                    if (exp.paidByMember === deviceUser?.id) {
+                        myNet += exp.amountMoney - mySplit.shareMoney;
+                    } else {
+                        myNet -= mySplit.shareMoney;
+                    }
                 }
             }
-            const mySpend = list
-                .filter((e) => e.paidByMember === deviceUser?.id)
-                .reduce((s, e) => s + e.amountMoney, 0);
             return {
-                tripId: trip.id, name: trip.name, memberCount: members.length,
-                total: tripTotal, myNet, spendRatio: tripTotal > 0 ? mySpend / tripTotal : 0,
+                tripId: trip.id,
+                name: trip.name,
+                memberCount: members.length,
+                total: tripTotal,
+                myNet,
+                spendRatio: tripTotal > 0 ? mySpend / tripTotal : 0,
             };
         }).filter((g) => g.total > 0);
     }, [trips, filteredByTrip, allSplits, allMembers, deviceUser?.id]);
@@ -138,9 +246,14 @@ export default function StatisticsScreen() {
     const hasAnyData = totalSpent > 0;
 
     return (
-        <SafeAreaView style={[styles.root, { backgroundColor: colors.bg }]} edges={['top', 'left', 'right']}>
-            <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
-
+        <SafeAreaView
+            style={[styles.root, { backgroundColor: colors.bg }]}
+            edges={['top', 'left', 'right']}
+        >
+            <ScrollView
+                showsVerticalScrollIndicator={false}
+                contentContainerStyle={styles.content}
+            >
                 <Text style={[typography.heading, { color: colors.text, marginBottom: spacing.md }]}>
                     Statistics
                 </Text>
@@ -152,16 +265,26 @@ export default function StatisticsScreen() {
                             key={f.value}
                             style={[
                                 styles.filterBtn,
-                                { backgroundColor: timeFilter === f.value ? colors.accent : colors.subSurface },
+                                {
+                                    backgroundColor:
+                                        timeFilter === f.value ? colors.accent : colors.subSurface,
+                                },
                             ]}
                             onPress={() => setTimeFilter(f.value)}
                             accessibilityRole="radio"
                             accessibilityState={{ selected: timeFilter === f.value }}
                         >
-                            <Text style={[typography.caption, {
-                                color: timeFilter === f.value ? colors.textInverse : colors.textSecondary,
-                                fontWeight: '600',
-                            }]}>
+                            <Text
+                                style={[
+                                    typography.caption,
+                                    {
+                                        color: timeFilter === f.value
+                                            ? colors.textInverse
+                                            : colors.textSecondary,
+                                        fontWeight: '600',
+                                    },
+                                ]}
+                            >
                                 {f.label}
                             </Text>
                         </Pressable>
@@ -194,10 +317,14 @@ export default function StatisticsScreen() {
 
                         {/* Net settlement */}
                         <View style={[styles.netCard, { backgroundColor: colors.accentLight }]}>
-                            <Text style={[typography.label, { color: colors.accent }]}>NET SETTLEMENT LEFT</Text>
-                            <AmountText paise={Math.abs(netSettlement)} sign="neutral" size="lg" style={{ color: colors.accent }} />
+                            <Text style={[typography.label, { color: colors.accent }]}>
+                                NET SETTLEMENT LEFT
+                            </Text>
+                            <AmountText paise={Math.abs(netSettlement)} sign="neutral" size="lg" style={{ color: colors.accent } as object} />
                             <Text style={[typography.caption, { color: colors.textSecondary, marginTop: spacing.xs }]}>
-                                {netSettlement >= 0 ? 'This is what others owe you, net' : 'This is what you owe, net'}
+                                {netSettlement >= 0
+                                    ? 'Net amount others owe you'
+                                    : 'Net amount you owe'}
                             </Text>
                         </View>
 
@@ -225,45 +352,32 @@ export default function StatisticsScreen() {
                                         </View>
                                         <AmountText paise={g.myNet} sign="auto" size="md" />
                                     </View>
-                                    <ProgressBar value={g.spendRatio} height={5} style={{ marginTop: spacing.sm }} />
+                                    <ProgressBar
+                                        value={g.spendRatio}
+                                        height={5}
+                                        style={{ marginTop: spacing.sm }}
+                                    />
                                 </Pressable>
                             ))}
                         </View>
 
-                        {/* ── Spending by category ──────────────────────── */}
+                        {/* ── Spending by category — animated ──────────── */}
                         <Text style={[typography.bodyMd, { color: colors.text, marginTop: spacing.xl, marginBottom: spacing.md }]}>
                             Spending by Category
                         </Text>
                         <View style={[styles.categoryCard, { backgroundColor: colors.card, borderColor: colors.cardBorder }]}>
-                            {CATEGORY_META.map((cat) => {
+                            {CATEGORY_META.map((cat, catIndex) => {
                                 const value = categoryTotals[cat.value] ?? 0;
-                                const barWidth = (value / maxCategoryValue) * BAR_CHART_WIDTH;
+                                const targetBarWidth = (value / maxCategoryValue) * BAR_CHART_WIDTH;
                                 return (
-                                    <View key={cat.value} style={styles.categoryRow}>
-                                        <View style={styles.categoryIconWrap}>
-                                            <Icon
-                                                name={cat.iconKey}
-                                                size={18}
-                                                color={colors.icon}
-                                            />
-                                        </View>
-                                        <Text style={[typography.body, { color: colors.text, width: 72 }]}>
-                                            {cat.label}
-                                        </Text>
-                                        <Svg width={BAR_CHART_WIDTH} height={BAR_HEIGHT}>
-                                            <Rect
-                                                x={0} y={2} width={BAR_CHART_WIDTH} height={BAR_HEIGHT - 4}
-                                                rx={4} fill={colors.separator}
-                                            />
-                                            <Rect
-                                                x={0} y={2} width={Math.max(barWidth, 2)} height={BAR_HEIGHT - 4}
-                                                rx={4} fill={colors.accent}
-                                            />
-                                        </Svg>
-                                        <Text style={[typography.mono, { color: colors.textSecondary, marginLeft: spacing.sm }]}>
-                                            {value > 0 ? `₹${(value / 100).toFixed(0)}` : '—'}
-                                        </Text>
-                                    </View>
+                                    <AnimatedCategoryBar
+                                        key={cat.value}
+                                        cat={cat}
+                                        value={value}
+                                        targetBarWidth={targetBarWidth}
+                                        index={catIndex}
+                                        colors={colors}
+                                    />
                                 );
                             })}
                         </View>
@@ -274,28 +388,54 @@ export default function StatisticsScreen() {
     );
 }
 
+// ─── Styles ───────────────────────────────────────────────────────────────────
+
 const styles = StyleSheet.create({
     root: { flex: 1 },
     content: { padding: spacing.md, paddingBottom: spacing.xxl },
 
     filterRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.lg },
-    filterBtn: { flex: 1, paddingVertical: spacing.sm, borderRadius: radii.sm, alignItems: 'center' },
+    filterBtn: {
+        flex: 1,
+        paddingVertical: spacing.sm,
+        borderRadius: radii.sm,
+        alignItems: 'center',
+    },
 
     summaryRow: { flexDirection: 'row', gap: spacing.sm, marginBottom: spacing.md },
     summaryCard: {
-        flex: 1, padding: spacing.md, borderRadius: radii.md, borderWidth: StyleSheet.hairlineWidth,
+        flex: 1,
+        padding: spacing.md,
+        borderRadius: radii.md,
+        borderWidth: StyleSheet.hairlineWidth,
         gap: spacing.xs,
     },
     netCard: {
-        padding: spacing.lg, borderRadius: radii.lg, alignItems: 'center', gap: spacing.xs,
+        padding: spacing.lg,
+        borderRadius: radii.lg,
+        alignItems: 'center',
+        gap: spacing.xs,
     },
 
     groupList: { gap: spacing.sm },
-    groupCard: { padding: spacing.md, borderRadius: radii.lg, borderWidth: StyleSheet.hairlineWidth },
+    groupCard: {
+        padding: spacing.md,
+        borderRadius: radii.lg,
+        borderWidth: StyleSheet.hairlineWidth,
+    },
     groupHeader: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
     groupInfo: { flex: 1, gap: 2 },
 
-    categoryCard: { padding: spacing.md, borderRadius: radii.lg, borderWidth: StyleSheet.hairlineWidth, gap: spacing.md },
-    categoryRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.sm },
+    categoryCard: {
+        padding: spacing.md,
+        borderRadius: radii.lg,
+        borderWidth: StyleSheet.hairlineWidth,
+        gap: spacing.md,
+    },
+    categoryRow: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        gap: spacing.sm,
+    },
     categoryIconWrap: { width: 24, alignItems: 'center' },
 });

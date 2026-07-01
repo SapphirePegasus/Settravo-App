@@ -170,6 +170,7 @@ function RootLayoutInner() {
                 <Stack.Protected guard={isAuthenticated}>
                     <Stack.Screen name="(tabs)" />
                     <Stack.Screen name="(trip)" />
+                    <Stack.Screen name="(info)" options={{ presentation: 'modal', headerShown: false }} />
                 </Stack.Protected>
                 <Stack.Protected guard={!isAuthenticated}>
                     <Stack.Screen name="(auth)" />

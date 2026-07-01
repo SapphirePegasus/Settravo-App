@@ -31,7 +31,7 @@ import { useGroupImage } from '../../hooks/useGroupImage';
 import { useToast } from '../../components/Toast';
 import { supabase } from '../../lib/supabase';
 import { createTrip, getTrip } from '../../services/tripService';
-import { setTripCoverFromUrl, uploadTripCoverImage } from '../../services/tripImageService';
+import { downloadAndUploadStockImage, uploadTripCoverImage } from '../../services/tripImageService';
 import { useAuthStore } from '../../stores/authStore';
 import { useTripStore } from '../../stores/tripStore';
 import { spacing, typography, radii } from '@/theme';
@@ -68,8 +68,13 @@ export default function CreateGroupScreen() {
     const groupImage = useGroupImage();
     const [uploadedUri, setUploadedUri] = useState<string | null>(null);
     const [uploadedMime, setUploadedMime] = useState<string | null>(null);
+    const [imageLoadFailed, setImageLoadFailed] = useState(false);
     const [uploadingPhoto, setUploadingPhoto] = useState(false);
     const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+    // Reset load-failed flag whenever the suggestion changes so every new
+    // result gets a fresh attempt before the placeholder fallback is shown.
+    useEffect(() => { setImageLoadFailed(false); }, [groupImage.result?.previewUrl]);
 
     useEffect(() => {
         if (uploadedUri) return;
@@ -151,7 +156,13 @@ export default function CreateGroupScreen() {
                     if (uploadedUri && uploadedMime) {
                         await uploadTripCoverImage(resolvedTripId, uploadedUri, uploadedMime);
                     } else if (groupImage.result) {
-                        await setTripCoverFromUrl(resolvedTripId, groupImage.result.fullUrl);
+                        // Download the stock image via controlled fetch and upload to
+                        // Supabase Storage. This ensures:
+                        //   (a) The image is stored under our own bucket (not a raw
+                        //       third-party CDN URL that may expire or change).
+                        //   (b) Our fetch() sends proper headers that bypass CDN
+                        //       hotlink guards that the Image component cannot satisfy.
+                        await downloadAndUploadStockImage(resolvedTripId, groupImage.result.fullUrl);
                     }
                 } catch (imgErr) {
                     showToast({
@@ -221,7 +232,7 @@ export default function CreateGroupScreen() {
                         <ActivityIndicator color={colors.accent} size="small" />
                     ) : (
                         <Text style={[typography.bodyMd, { color: isValid ? colors.accent : colors.textDisabled, fontWeight: '600' }]}>
-                            {isEditMode ? '' : ''}
+                            {isEditMode ? 'Save' : 'Create'}
                         </Text>
                     )}
                 </Pressable>
@@ -232,8 +243,14 @@ export default function CreateGroupScreen() {
 
                     {/* Cover image */}
                     <View style={[styles.imageSection, { backgroundColor: colors.accentLight }]}>
-                        {previewUri ? (
-                            <Image source={{ uri: previewUri }} style={styles.imagePreview} contentFit="cover" transition={150} />
+                        {previewUri && !imageLoadFailed ? (
+                            <Image
+                                source={{ uri: previewUri }}
+                                style={styles.imagePreview}
+                                contentFit="cover"
+                                transition={150}
+                                onError={() => setImageLoadFailed(true)}
+                            />
                         ) : (
                             <View style={styles.imagePlaceholderInner}>
                                 <Text style={[styles.imagePlaceholderInitials, { color: colors.accent }]}>

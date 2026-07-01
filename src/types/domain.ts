@@ -31,6 +31,8 @@ export interface Trip {
     endDate: string | null;
     createdByDevice: string;   // FK → TravelAppUsers.id
     createdAt: string;
+    /** URL to the trip's cover image stored in Supabase Storage. Null when not set. */
+    coverImageUrl: string | null;
     /** Null when expired or never generated. 4 uppercase alphanumeric chars. */
     joinCode: string | null;
     /** ISO timestamptz. Null when code is expired or never generated. */

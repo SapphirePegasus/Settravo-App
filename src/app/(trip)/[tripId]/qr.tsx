@@ -7,7 +7,7 @@
  *   📤 Share Code / Share (guest links) → <Icon name="action.share" />
  */
 
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useState } from 'react';
 import {
     ActivityIndicator,
@@ -39,6 +39,7 @@ function fmtCountdown(s: number): string {
 
 export default function QRScreen() {
     const { tripId } = useLocalSearchParams<{ tripId: string }>();
+    const router = useRouter();
     const colors = useThemeColors();
     const members = useMembers(tripId ?? '');
     const guestMembers = members.filter((m) => m.isGuest && m.guestToken);
@@ -117,11 +118,25 @@ export default function QRScreen() {
 
     return (
         <SafeAreaView style={[styles.root, { backgroundColor: colors.bg }]} edges={['top', 'left', 'right']}>
-            <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
-                <Text style={[typography.heading, { color: colors.text, marginBottom: spacing.xs }]}>
-                    Invite to Trip
+            {/* Header */}
+            <View style={[styles.header, { borderBottomColor: colors.separator }]}>
+                <Pressable
+                    style={styles.headerBtn}
+                    onPress={() => router.back()}
+                    hitSlop={8}
+                    accessibilityRole="button"
+                    accessibilityLabel="Go back"
+                >
+                    <Icon name="header.back" size={24} color={colors.accent} />
+                </Pressable>
+                <Text style={[typography.bodyMd, { color: colors.text, flex: 1, textAlign: 'center' }]}>
+                    Share Group
                 </Text>
-                <Text style={[typography.body, { color: colors.textSecondary, marginBottom: spacing.xl }]}>
+                <View style={styles.headerBtn} />
+            </View>
+
+            <ScrollView contentContainerStyle={styles.content} showsVerticalScrollIndicator={false}>
+                <Text style={[typography.body, { color: colors.textSecondary, marginBottom: spacing.xl, textAlign: 'center' }]}>
                     Others scan this to join {trip?.name ?? 'the trip'}.
                 </Text>
 
@@ -220,6 +235,14 @@ export default function QRScreen() {
 const styles = StyleSheet.create({
     root: { flex: 1 },
     centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
+    header: {
+        flexDirection: 'row',
+        alignItems: 'center',
+        paddingHorizontal: spacing.xs,
+        paddingVertical: spacing.sm,
+        borderBottomWidth: StyleSheet.hairlineWidth,
+    },
+    headerBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
     content: { padding: spacing.lg, paddingBottom: spacing.xxl, alignItems: 'center' },
     qrCard: {
         padding: spacing.lg,
