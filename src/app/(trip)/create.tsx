@@ -232,7 +232,7 @@ export default function CreateGroupScreen() {
                         <ActivityIndicator color={colors.accent} size="small" />
                     ) : (
                         <Text style={[typography.bodyMd, { color: isValid ? colors.accent : colors.textDisabled, fontWeight: '600' }]}>
-                            {isEditMode ? 'Save' : 'Create'}
+                            {isEditMode ? '' : ''}
                         </Text>
                     )}
                 </Pressable>

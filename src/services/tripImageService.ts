@@ -63,24 +63,19 @@ export async function downloadAndUploadStockImage(
     tripId: string,
     stockImageUrl: string,
 ): Promise<string> {
-    // 1. Download the stock image via our controlled fetch.
-    //    A browser-like User-Agent is required to pass Pixabay CDN hotlink
-    //    guards that reject non-browser requests. The 10 s timeout prevents
-    //    the operation hanging indefinitely on slow connections.
+    // 1. Download the stock image.
+    //    Pexels CDN (images.pexels.com) serves images without referrer or
+    //    session requirements — a plain fetch() works reliably.
+    //    10s AbortController timeout guards against slow connections.
+    //    (Pixabay was the previous provider; its webformatURL CDN returned
+    //    HTTP 429 on server-side fetch regardless of User-Agent, which is
+    //    why we switched to Pexels.)
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), 10_000);
 
     let response: Response;
     try {
-        response = await fetch(stockImageUrl, {
-            signal: controller.signal,
-            headers: {
-                'User-Agent':
-                    'Mozilla/5.0 (Linux; Android 14) AppleWebKit/537.36 ' +
-                    '(KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36',
-                'Accept': 'image/webp,image/avif,image/*,*/*;q=0.8',
-            },
-        });
+        response = await fetch(stockImageUrl, { signal: controller.signal });
     } finally {
         clearTimeout(timeoutId);
     }

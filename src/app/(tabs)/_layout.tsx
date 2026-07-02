@@ -322,7 +322,7 @@ const styles = StyleSheet.create({
     tabIconContainer: {
         alignItems: 'center',
         justifyContent: 'center',
-        paddingTop: spacing.sm,
+        paddingTop: spacing.md,
         gap: 3,
         minWidth: 56,
     },
@@ -332,7 +332,7 @@ const styles = StyleSheet.create({
         fontWeight: '600',
     },
     fab: {
-        width: 48,
+        //width: 48,
         height: 48,
         alignItems: 'center',
         justifyContent: 'center',

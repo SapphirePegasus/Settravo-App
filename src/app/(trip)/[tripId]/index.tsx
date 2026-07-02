@@ -39,7 +39,6 @@ import { ExpenseDateSection } from '../../../components/trip/ExpenseDateSection'
 import { TripSummaryCard } from '../../../components/trip/TripSummaryCard';
 import { Avatar } from '../../../components/ui/Avatar';
 import { Icon } from '../../../components/ui/Icon';
-import { SkeletonExpenseRow } from '../../../components/ui/Skeleton';
 import { useToast } from '../../../components/Toast';
 import { useThemeColors } from '../../../hooks/useThemeColors';
 import { useExpenses } from '../../../hooks/useExpenses';
@@ -136,52 +135,6 @@ function CoverHero({ trip }: CoverHeroProps) {
     );
 }
 
-// ─── Per-trip stat row ────────────────────────────────────────────────────────
-
-interface TripStatRowProps {
-    owed: number;
-    owe: number;
-    total: number;
-}
-
-function TripStatRow({ owed, owe, total }: TripStatRowProps) {
-    const colors = useThemeColors();
-    return (
-        <View style={statStyles.row}>
-            <View style={[statStyles.card, { backgroundColor: colors.card, borderColor: colors.cardBorder }]}>
-                <Text style={[typography.label, { color: colors.textSecondary }]}>YOU ARE OWED</Text>
-                <Text style={[typography.monoLg, { color: colors.owed }]}>
-                    {formatRupees(owed)}
-                </Text>
-            </View>
-            <View style={[statStyles.card, { backgroundColor: colors.card, borderColor: colors.cardBorder }]}>
-                <Text style={[typography.label, { color: colors.textSecondary }]}>YOU OWE</Text>
-                <Text style={[typography.monoLg, { color: colors.owe }]}>
-                    {formatRupees(owe)}
-                </Text>
-            </View>
-            <View style={[statStyles.card, { backgroundColor: colors.card, borderColor: colors.cardBorder }]}>
-                <Text style={[typography.label, { color: colors.textSecondary }]}>TOTAL SPENT</Text>
-                <Text style={[typography.monoLg, { color: colors.text }]}>
-                    {formatRupees(total)}
-                </Text>
-            </View>
-        </View>
-    );
-}
-
-const statStyles = StyleSheet.create({
-    row: { flexDirection: 'row', gap: spacing.sm },
-    card: {
-        flex: 1,
-        borderRadius: radii.md,
-        borderWidth: StyleSheet.hairlineWidth,
-        padding: spacing.sm,
-        gap: 4,
-        alignItems: 'flex-start',
-    },
-});
-
 // ─── Members section ──────────────────────────────────────────────────────────
 
 interface MembersSectionProps {
@@ -252,7 +205,6 @@ function MembersSection({ members, onAddMember, onShareGuestLink }: MembersSecti
 
 type SectionData =
     | { title: 'cover'; data: ['cover'] }
-    | { title: 'stats'; data: ['stats'] }
     | { title: 'members'; data: ['members'] }
     | { title: 'summary'; data: ['summary'] }
     | { title: string; data: string[]; dateKey: string };
@@ -297,26 +249,6 @@ export default function TripDetailScreen() {
 
     const allSplits = useMemo(() => Object.values(splits).flat(), [splits]);
 
-    // Per-trip financial position for the current user
-    const { tripOwed, tripOwe, tripTotalSpent } = useMemo(() => {
-        let owed = 0, owe = 0, total = 0;
-        for (const exp of expenses) {
-            total += exp.amountMoney;
-            const expSplits = allSplits.filter((sp) => sp.expenseId === exp.id && !sp.isSettled);
-            if (exp.paidByMember === myMember?.id) {
-                // I paid — others' unsettled shares are owed to me
-                for (const sp of expSplits) {
-                    if (sp.memberId !== myMember?.id) owed += sp.shareMoney;
-                }
-            } else {
-                // Someone else paid — my unsettled share is what I owe
-                const mine = expSplits.find((sp) => sp.memberId === myMember?.id);
-                if (mine) owe += mine.shareMoney;
-            }
-        }
-        return { tripOwed: owed, tripOwe: owe, tripTotalSpent: total };
-    }, [expenses, allSplits, myMember?.id]);
-
     const settlements = useMemo(
         () => calculateSettlements(expenses, allSplits, members),
         [expenses, allSplits, members],
@@ -325,7 +257,6 @@ export default function TripDetailScreen() {
 
     const sections: SectionData[] = useMemo(() => [
         { title: 'cover', data: ['cover'] as ['cover'] },
-        { title: 'stats', data: ['stats'] as ['stats'] },
         { title: 'members', data: ['members'] as ['members'] },
         { title: 'summary', data: ['summary'] as ['summary'] },
         ...groupExpensesByDate(expenses).map((g) => ({
@@ -446,15 +377,6 @@ export default function TripDetailScreen() {
             if (section.title === 'cover') {
                 return trip ? <CoverHero trip={trip} /> : null;
             }
-            if (section.title === 'stats') {
-                return (
-                    <TripStatRow
-                        owed={tripOwed}
-                        owe={tripOwe}
-                        total={tripTotalSpent}
-                    />
-                );
-            }
             if (section.title === 'members') {
                 return (
                     <MembersSection
@@ -492,7 +414,7 @@ export default function TripDetailScreen() {
 
     const renderSectionHeader = useCallback(
         ({ section }: { section: SectionData }) => {
-            if (['cover', 'stats', 'members', 'summary'].includes(section.title)) return null;
+            if (['cover', 'members', 'summary'].includes(section.title)) return null;
             return <ExpenseDateSection dateKey={(section as { dateKey: string }).dateKey} />;
         },
         [],
@@ -549,19 +471,10 @@ export default function TripDetailScreen() {
                 renderSectionHeader={renderSectionHeader}
                 renderItem={renderItem}
                 ListEmptyComponent={
-                    expensesLoading ? (
-                        <View style={styles.content}>
-                            {[1, 2, 3].map((k) => (
-                                <View key={k} style={[{ backgroundColor: colors.card, borderRadius: radii.lg }]}>
-                                    <SkeletonExpenseRow />
-                                </View>
-                            ))}
-                        </View>
-                    ) : (
+                    expensesLoading ? null : (
                         <View style={[styles.emptyCard, { backgroundColor: colors.card }]}>
-                            <Icon name="money.receipt" size={32} color={colors.icon} />
-                            <Text style={[typography.body, { color: colors.textSecondary, textAlign: 'center', marginTop: spacing.sm }]}>
-                                No expenses yet.{'\n'}Tap Add Expense to get started.
+                            <Text style={[typography.body, { color: colors.textSecondary, textAlign: 'center' }]}>
+                                No expenses yet. Tap Add Expense to get started.
                             </Text>
                         </View>
                     )

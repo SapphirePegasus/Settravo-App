@@ -131,8 +131,8 @@ export default function DashboardScreen() {
         statTranslateY.value = withDelay(120, withTiming(0, { duration: 300, easing: Easing.out(Easing.ease) }));
         listOpacity.value = withDelay(220, withTiming(1, { duration: 320, easing: Easing.out(Easing.ease) }));
         listTranslateY.value = withDelay(220, withTiming(0, { duration: 320, easing: Easing.out(Easing.ease) }));
-        // Run once on mount — empty deps is intentional here.
-        // eslint-disable-next-line react-hooks/exhaustive-deps
+    // Run once on mount — empty deps is intentional here.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const statAnimStyle = useAnimatedStyle(() => ({
@@ -172,51 +172,51 @@ export default function DashboardScreen() {
                 contentContainerStyle={{ paddingBottom: spacing.xxl + insets.bottom }}
             >
                 {/* ── Hero ──────────────────────────────────────────────── */}
-                <View style={{ height: HERO_HEIGHT }}>
-                    <ImageBackground
-                        source={heroSource}
-                        style={styles.hero}
-                        resizeMode="cover"
-                    >
-                        <View style={styles.heroScrim} />
+                {/* ImageBackground is a normal flow element with a fixed height.
+                    Previously it used absoluteFillObject inside a height-wrapper,
+                    which took it out of the flow — the statRow then had nothing
+                    to push it down and appeared at the top of the wrapper (status
+                    bar level). Giving ImageBackground its own height makes both
+                    it and the statRow normal flow siblings so the negative
+                    marginTop overlap works correctly. */}
+                <ImageBackground
+                    source={heroSource}
+                    style={styles.hero}
+                    resizeMode="cover"
+                >
+                    <View style={styles.heroScrim} />
 
-                        {/* ─ Floating header — ABSOLUTELY POSITIONED at top ─
-                            Previous bug: this was a regular flex child inside
-                            a justifyContent:'flex-end' container, so it
-                            appeared at the bottom of the hero, not the top.
-                            Fix: position:'absolute', top:0 — decoupled from
-                            the flex stack, anchored to the hero's top edge.
-                            SafeAreaView with edges:['top'] adds the correct
-                            status-bar inset without a hardcoded magic number. */}
-                        <SafeAreaView edges={['top']} style={styles.heroHeader}>
-                            <Pressable
-                                onPress={() => setMenuDrawerVisible(true)}
-                                hitSlop={12}
-                                accessibilityLabel="Open menu"
-                                accessibilityRole="button"
-                                style={styles.heroHeaderBtn}
-                            >
-                                <Icon name="header.menu" size={24} color="#FFFFFF" />
-                            </Pressable>
-                            {/* Bell icon removed — notifications not yet implemented */}
-                        </SafeAreaView>
+                    {/* Floating header — position:absolute inside ImageBackground.
+                        SafeAreaView edges:['top'] pads for the status bar. */}
+                    <SafeAreaView edges={['top']} style={styles.heroHeader}>
+                        <Pressable
+                            onPress={() => setMenuDrawerVisible(true)}
+                            hitSlop={12}
+                            accessibilityLabel="Open menu"
+                            accessibilityRole="button"
+                            style={styles.heroHeaderBtn}
+                        >
+                            <Icon name="header.menu" size={24} color="#FFFFFF" />
+                        </Pressable>
+                        {/* Bell icon removed — notifications not yet implemented */}
+                    </SafeAreaView>
 
-                        {/* Greeting — sits at the bottom of the hero */}
-                        <View style={styles.heroContent}>
-                            <Text style={styles.heroWelcome}>Welcome back,</Text>
-                            <Text style={styles.heroName} numberOfLines={1}>
-                                {displayName}
-                            </Text>
-                        </View>
-                    </ImageBackground>
+                    {/* Greeting — flex-end pushes it to hero bottom */}
+                    <View style={styles.heroContent}>
+                        <Text style={styles.heroWelcome}>Welcome back,</Text>
+                        <Text style={styles.heroName} numberOfLines={1}>
+                            {displayName}
+                        </Text>
+                    </View>
+                </ImageBackground>
 
-                    {/* Stat cards — overlap the hero bottom edge */}
-                    <Animated.View style={[styles.statRow, { marginTop: -STAT_OVERLAP }, statAnimStyle]}>
+                {/* Stat cards — next ScrollView sibling, negative marginTop
+                    visually overlaps the hero's bottom edge. */}
+                <Animated.View style={[styles.statRow, statAnimStyle]}>
                         <StatCard label="You are owed" paise={totalOwed} colorRole="owed" />
                         <StatCard label="You owe" paise={totalOwe} colorRole="owe" />
                         <StatCard label="Total spent" paise={totalSpent} colorRole="neutral" />
                     </Animated.View>
-                </View>
 
                 {/* ── Recent groups ──────────────────────────────────────── */}
                 <Animated.View style={[styles.section, listAnimStyle]}>
@@ -293,18 +293,19 @@ export default function DashboardScreen() {
 const styles = StyleSheet.create({
     root: { flex: 1 },
 
-    // Hero — fixed height, image fills it
+    // Hero — in-flow element with explicit height so its sibling (statRow)
+    // renders below it. justifyContent:'flex-end' pushes heroContent down.
     hero: {
-        ...StyleSheet.absoluteFillObject,
-        justifyContent: 'flex-end',   // heroContent sits at the bottom
+        height: HERO_HEIGHT,
+        width: '100%',
+        justifyContent: 'flex-end',
     },
     heroScrim: {
-        ...StyleSheet.absoluteFillObject,
+        ...StyleSheet.absoluteFillObject,  // scoped to ImageBackground, not screen
         backgroundColor: 'rgba(0,0,0,0.32)',
     },
 
-    // Header — absolute so it doesn't participate in flex layout,
-    // allowing justifyContent:'flex-end' to only affect heroContent.
+    // Header — absolute inside ImageBackground, anchored to its top edge.
     heroHeader: {
         position: 'absolute',
         top: 0,
@@ -340,11 +341,13 @@ const styles = StyleSheet.create({
         letterSpacing: -0.5,
     },
 
-    // Stat row — positioned to overlap the hero bottom
+    // Stat row — negative marginTop overlaps the hero bottom edge.
+    // Works correctly because ImageBackground is now a normal flow element.
     statRow: {
         flexDirection: 'row',
         gap: spacing.sm,
         paddingHorizontal: spacing.md,
+        marginTop: -STAT_OVERLAP,
     },
 
     // Section
