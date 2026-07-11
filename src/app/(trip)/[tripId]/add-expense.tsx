@@ -323,7 +323,6 @@ export default function AddExpenseScreen() {
                     <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>EXPENSE NAME *</Text>
                     <TextInput
                         style={[styles.input, { backgroundColor: colors.inputBg, color: colors.text, borderColor: colors.cardBorder }]}
-                        placeholder="e.g. Hotel checkout"
                         placeholderTextColor={colors.placeholder}
                         value={title}
                         onChangeText={(v) => { setTitle(v); setError(null); }}
@@ -339,7 +338,6 @@ export default function AddExpenseScreen() {
                         <Text style={[styles.amountPrefix, { color: colors.textSecondary }]}>₹</Text>
                         <TextInput
                             style={[styles.amountInput, { color: colors.text }]}
-                            placeholder="0.00"
                             placeholderTextColor={colors.placeholder}
                             value={amountStr}
                             onChangeText={(v) => { setAmountStr(v.replace(/[^0-9.]/g, '')); setError(null); }}
@@ -569,7 +567,7 @@ const styles = StyleSheet.create({
         paddingHorizontal: spacing.md, ...typography.body,
     },
     amountRow: {
-        flexDirection: 'row', alignItems: 'center', height: 64,
+        flexDirection: 'row', alignItems: 'center', height: 52,
         borderRadius: radii.md, borderWidth: 1, paddingHorizontal: spacing.md,
     },
     amountPrefix: { ...typography.monoLg, marginRight: spacing.xs },

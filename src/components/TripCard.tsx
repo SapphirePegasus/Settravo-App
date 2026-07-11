@@ -100,32 +100,11 @@ function TripCardInner({ trip, pendingSyncCount, onPress }: TripCardProps) {
                         {trip.name}
                     </Text>
 
-                    {trip.destination ? (
-                        <View style={styles.metaRow}>
-                            <Icon name="nav.place" size={12} color={colors.textSecondary} />
-                            <Text style={[typography.caption, { color: colors.textSecondary }]} numberOfLines={1}>
-                                {trip.destination}
-                            </Text>
-                        </View>
-                    ) : null}
-
-                    {dateLabel ? (
-                        <View style={styles.metaRow}>
-                            <Icon name="nav.calendar" size={12} color={colors.textSecondary} />
-                            <Text style={[typography.caption, { color: colors.textSecondary }]}>
-                                {dateLabel}
-                            </Text>
-                        </View>
-                    ) : null}
-
                     <View style={styles.badgeRow}>
                         {memberCount > 0 && (
-                            <View style={[styles.badge, { backgroundColor: colors.subSurface }]}>
-                                <Icon name="nav.groups" size={11} color={colors.textSecondary} />
-                                <Text style={[typography.label, { color: colors.textSecondary }]}>
-                                    {memberCount}
-                                </Text>
-                            </View>
+                            <Text style={[typography.label, { color: colors.textSecondary }]}>
+                                {memberCount} {memberCount === 1 ? 'member' : 'members'}
+                            </Text>
                         )}
                         {pendingSyncCount > 0 && (
                             <View style={[styles.badge, { backgroundColor: colors.warningMuted }]}>
@@ -164,7 +143,7 @@ const styles = StyleSheet.create({
     inner: {
         flexDirection: 'row',
         alignItems: 'center',
-        padding: spacing.md,
+        padding: spacing.sm,
         gap: spacing.md,
     },
     thumbnailBox: {

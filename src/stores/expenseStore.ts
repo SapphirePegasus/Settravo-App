@@ -42,12 +42,14 @@
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 import { create } from 'zustand';
 import type { Expense, Split } from '../types/domain';
+import { fetchAllSplitsForTrip, fetchExpenses } from '@/services/expenseService';
 
 interface ExpenseState {
     expenses: Record<string, Expense[]>;
     splits: Record<string, Split[]>;
     isLoading: boolean;
     pendingLocalIds: Record<string, Set<string>>;
+    hasFetched: Record<string, boolean>;
     /**
      * confirmedServerIds[tripId] → Set of server-assigned expense IDs that have
      * been confirmed via confirmExpense(). The realtime INSERT for these IDs
@@ -100,6 +102,7 @@ export const useExpenseStore = create<ExpenseState>((set, get) => ({
     splits: {},
     isLoading: false,
     pendingLocalIds: {},
+    hasFetched: {},
     confirmedServerIds: {},
 
     setExpenses: (tripId, expenses) =>
@@ -153,6 +156,28 @@ export const useExpenseStore = create<ExpenseState>((set, get) => ({
         })),
 
     setLoading: (v) => set({ isLoading: v }),
+
+    loadExpenses: async (tripId: string) => {
+        // Guard: don't re-fetch if already loading or fetched for this trip
+        const state = get();
+        if (state.hasFetched?.[tripId]) return;
+
+        set((s) => ({ isLoading: true }));
+        try {
+            const [expenses, splits] = await Promise.all([
+                fetchExpenses(tripId),
+                fetchAllSplitsForTrip(tripId),
+            ]);
+            set((s) => ({
+                expenses: { ...s.expenses, [tripId]: expenses },
+                splits: { ...s.splits, [tripId]: splits },
+                hasFetched: { ...s.hasFetched, [tripId]: true },
+                isLoading: false,
+            }));
+        } catch {
+            set({ isLoading: false });
+        }
+    },
 
     setSplitSettled: (expenseIds, memberId, settled) =>
         set((s) => {

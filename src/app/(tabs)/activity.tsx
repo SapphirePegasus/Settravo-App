@@ -8,10 +8,9 @@
  */
 
 import { useRouter } from 'expo-router';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { SectionList, StyleSheet, Text, View, Pressable } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
-
 import { Avatar } from '../../components/ui/Avatar';
 import { AmountText } from '../../components/ui/AmountText';
 import { EmptyState } from '../../components/ui/EmptyState';
@@ -59,6 +58,7 @@ export default function ActivityScreen() {
     const router = useRouter();
     const colors = useThemeColors();
     const trips = useTripStore((s) => s.trips);
+    const { loadExpenses } = useExpenseStore();
     const allExpenses = useExpenseStore((s) => s.expenses);
     const allMembers = useMemberStore((s) => s.members);
 
@@ -104,6 +104,14 @@ export default function ActivityScreen() {
     }, [allExpenses, allMembers, tripNameMap, filterTripId]);
 
     const filterLabel = filterTripId ? (tripNameMap.get(filterTripId) ?? 'Unknown') : 'All Groups';
+
+    // Trigger fetch for ALL trips on mount (and when trips list changes)
+    useEffect(() => {
+        trips.forEach((trip) => {
+            // Only fetch if not already fetched (the store's hasFetched guard handles this)
+            loadExpenses(trip.id);
+        });
+    }, [trips, loadExpenses]);
 
     return (
         <SafeAreaView style={[styles.root, { backgroundColor: colors.bg }]} edges={['top', 'left', 'right']}>
@@ -170,7 +178,7 @@ export default function ActivityScreen() {
                     Filter by Group
                 </Text>
                 <Pressable
-                    style={[styles.filterOption, !filterTripId && { backgroundColor: colors.accentLight }]}
+                    style={[styles.filterOption, !filterTripId && { backgroundColor: colors.accent }]}
                     onPress={() => { setFilterTripId(null); setFilterVisible(false); }}
                 >
                     <Text style={[typography.bodyMd, { color: colors.text }]}>All Groups</Text>

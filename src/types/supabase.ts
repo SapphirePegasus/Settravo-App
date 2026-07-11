@@ -66,7 +66,7 @@ export interface Database {
                     end_date: string | null;
                     created_by_device: string;
                     created_at: string;
-                    cover_image_url: string | null;
+                    cover_image_url: string | null | undefined;
                 };
                 Insert: {
                     id?: string;
@@ -78,7 +78,7 @@ export interface Database {
                     end_date?: string | null;
                     created_by_device: string;
                     created_at?: string;
-                    cover_image_url: string | null;
+                    cover_image_url: string | null | undefined;
                 };
                 Update: {
                     id?: string;
@@ -90,7 +90,7 @@ export interface Database {
                     end_date?: string | null;
                     created_by_device?: string;
                     created_at?: string;
-                    cover_image_url: string | null;
+                    cover_image_url: string | null | undefined;
                 };
                 Relationships: [];
             };

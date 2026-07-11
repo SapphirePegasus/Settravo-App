@@ -223,6 +223,7 @@ const swipeStyles = StyleSheet.create({
     container: { flexDirection: 'row', alignItems: 'stretch' },
     action: {
         width: 72,
+        height: 78,
         alignItems: 'center',
         justifyContent: 'center',
         gap: 4,

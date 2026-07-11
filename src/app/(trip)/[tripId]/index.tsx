@@ -101,40 +101,6 @@ function groupExpensesByDate(
     return Array.from(map.entries()).map(([dateKey, data]) => ({ dateKey, data }));
 }
 
-// ─── Cover hero ───────────────────────────────────────────────────────────────
-
-interface CoverHeroProps {
-    trip: Trip;
-}
-
-function CoverHero({ trip }: CoverHeroProps) {
-    const colors = useThemeColors();
-    const [imageError, setImageError] = useState(false);
-
-    const initials = trip.name.slice(0, 2).toUpperCase();
-    const showImage = Boolean(trip.coverImageUrl) && !imageError;
-
-    return (
-        <View style={[styles.coverContainer, { backgroundColor: colors.accentLight }]}>
-            {showImage ? (
-                <Image
-                    source={{ uri: trip.coverImageUrl! }}
-                    style={StyleSheet.absoluteFill}
-                    contentFit="cover"
-                    transition={200}
-                    onError={() => setImageError(true)}
-                />
-            ) : (
-                <Text style={[styles.coverInitials, { color: colors.accent }]}>{initials}</Text>
-            )}
-            {/* Gradient scrim at bottom for text legibility when image shows */}
-            {showImage && (
-                <View style={styles.coverScrim} />
-            )}
-        </View>
-    );
-}
-
 // ─── Members section ──────────────────────────────────────────────────────────
 
 interface MembersSectionProps {
@@ -145,6 +111,8 @@ interface MembersSectionProps {
 
 function MembersSection({ members, onAddMember, onShareGuestLink }: MembersSectionProps) {
     const colors = useThemeColors();
+    const [memberMenuTarget, setMemberMenuTarget] = useState<Member | null>(null);
+
     return (
         <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.cardBorder }]}>
             <View style={styles.cardHeader}>
@@ -160,7 +128,7 @@ function MembersSection({ members, onAddMember, onShareGuestLink }: MembersSecti
                 >
                     <Icon name="action.add" size={14} color={colors.accent} />
                     <Text style={[typography.caption, { color: colors.accent, fontWeight: '600' }]}>
-                        ADD
+                        ADD MEMBER
                     </Text>
                 </Pressable>
             </View>
@@ -171,12 +139,9 @@ function MembersSection({ members, onAddMember, onShareGuestLink }: MembersSecti
                     <Pressable
                         key={m.id}
                         style={styles.memberChip}
-                        onLongPress={() => { if (m.isGuest) onShareGuestLink(m.id); }}
-                        accessibilityLabel={
-                            m.isGuest
-                                ? `${m.displayName} (guest) — long press to share link`
-                                : m.displayName
-                        }
+                        //onPress={() => setMemberMenuTarget(m)}
+                        onPress={() => { if (m.isGuest) onShareGuestLink(m.id); }}
+                        accessibilityLabel={m.displayName}
                     >
                         <Avatar name={m.displayName} size="md" />
                         <Text
@@ -191,12 +156,6 @@ function MembersSection({ members, onAddMember, onShareGuestLink }: MembersSecti
                     </Pressable>
                 ))}
             </View>
-
-            {members.some((m) => m.isGuest) && (
-                <Text style={[typography.caption, { color: colors.textDisabled, marginTop: spacing.xs }]}>
-                    Long-press a guest member to share their balance link.
-                </Text>
-            )}
         </View>
     );
 }
@@ -209,9 +168,11 @@ type SectionData =
     | { title: 'summary'; data: ['summary'] }
     | { title: string; data: string[]; dateKey: string };
 
+
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function TripDetailScreen() {
+
     const { tripId } = useLocalSearchParams<{ tripId: string }>();
     const router = useRouter();
     const colors = useThemeColors();
@@ -291,14 +252,14 @@ export default function TripDetailScreen() {
                 await Share.share({ message: text });
             },
         });
-        if (isCreator) {
+        /*if (isCreator) {
             actions.push({
                 label: 'Edit Trip',
                 iconKey: 'action.edit',
                 variant: 'default',
                 onPress: () => setEditTripVisible(true),
             });
-        }
+        }*/
         if (!isCreator || members.length === 1) {
             actions.push({
                 label: 'Leave Trip',
@@ -428,37 +389,74 @@ export default function TripDetailScreen() {
         );
     }
 
+    // ─── Cover hero ───────────────────────────────────────────────────────────────
+
+    interface CoverHeroProps {
+        trip: Trip;
+    }
+
+    function CoverHero({ trip }: CoverHeroProps) {
+        const colors = useThemeColors();
+        const [imageError, setImageError] = useState(false);
+
+        const initials = trip.name.slice(0, 2).toUpperCase();
+        const showImage = Boolean(trip.coverImageUrl) && !imageError;
+
+        return (
+            <View style={styles.heroWrapper}>
+                {/* Cover image */}
+                {showImage ? (
+                    <Image
+                        source={{ uri: trip.coverImageUrl! }}
+                        style={StyleSheet.absoluteFill}
+                        contentFit="cover"
+                        transition={200}
+                    />
+                ) : (
+                    <View style={[StyleSheet.absoluteFill, { backgroundColor: colors.accentLight, alignItems: 'center', justifyContent: 'center' }]}>
+                        <Text style={[typography.display, { color: colors.accent }]}>{initials}</Text>
+                    </View>
+                )}
+
+                {/* Floating back + menu — absolute at top */}
+                <SafeAreaView edges={['top']} style={styles.heroNav} pointerEvents="box-none">
+                    <Pressable
+                        style={styles.heroNavBtn}
+                        onPress={() => router.back()}
+                        hitSlop={12}
+                        accessibilityRole="button"
+                        accessibilityLabel="Go back"
+                    >
+                        <Icon name="header.back" size={24} color="#FFFFFF" />
+                    </Pressable>
+                    <Pressable
+                        style={styles.heroNavBtn}
+                        onPress={() => setMenuVisible(true)}
+                        hitSlop={12}
+                        accessibilityRole="button"
+                        accessibilityLabel="More options"
+                    >
+                        <Icon name="header.more" size={24} color="#FFFFFF" />
+                    </Pressable>
+                </SafeAreaView>
+
+                {/* Name + description — bottom-left, mirroring home hero */}
+                <View style={styles.heroTextPin}>
+                    {/* Group name — show FULL, no truncation */}
+                    <Text style={styles.heroGroupName}>{trip.name}</Text>
+                    {/* Description — ellipsis, max 2 lines */}
+                    {trip.destination ? (
+                        <Text style={styles.heroGroupDesc} numberOfLines={2} ellipsizeMode="tail">
+                            {trip.destination}
+                        </Text>
+                    ) : null}
+                </View>
+            </View>
+        );
+    }
+
     return (
         <View style={[styles.root, { backgroundColor: colors.bg }]}>
-            {/* ── Custom header (Stack headerShown:false, we own it) ─────── */}
-            <SafeAreaView
-                edges={['top']}
-                style={[styles.header, { backgroundColor: colors.surface, borderBottomColor: colors.separator }]}
-            >
-                <Pressable
-                    style={styles.headerBtn}
-                    onPress={() => router.back()}
-                    hitSlop={8}
-                    accessibilityRole="button"
-                    accessibilityLabel="Go back"
-                >
-                    <Icon name="header.back" size={24} color={colors.accent} />
-                </Pressable>
-
-                <Text style={[typography.bodyMd, { color: colors.text, flex: 1, textAlign: 'center' }]} numberOfLines={1}>
-                    {trip?.name ?? 'Trip'}
-                </Text>
-
-                <Pressable
-                    style={styles.headerBtn}
-                    onPress={() => setMenuVisible(true)}
-                    hitSlop={8}
-                    accessibilityRole="button"
-                    accessibilityLabel="Trip options"
-                >
-                    <Icon name="header.more" size={24} color={colors.text} />
-                </Pressable>
-            </SafeAreaView>
 
             <ConnectionBanner onReconnect={reconnectRealtime} />
 
@@ -566,18 +564,51 @@ const styles = StyleSheet.create({
     centered: { flex: 1, alignItems: 'center', justifyContent: 'center' },
 
     // Header
-    header: {
+    heroWrapper: {
+        width: '100%',
+        height: 220,   // same as dashboard hero height
+        overflow: 'hidden',
+    },
+    heroNav: {
+        position: 'absolute',
+        top: 0,
+        left: 0,
+        right: 0,
         flexDirection: 'row',
         alignItems: 'center',
-        paddingHorizontal: spacing.sm,
-        paddingVertical: spacing.sm,
-        borderBottomWidth: StyleSheet.hairlineWidth,
+        justifyContent: 'space-between',
+        paddingHorizontal: spacing.md,
+        paddingTop: spacing.xs,
     },
-    headerBtn: {
-        width: 44,
-        height: 44,
+    heroNavBtn: {
+        width: 40,
+        height: 40,
+        borderRadius: 20,
+        backgroundColor: 'rgba(0,0,0,0.28)',
         alignItems: 'center',
         justifyContent: 'center',
+    },
+    heroTextPin: {
+        position: 'absolute',
+        bottom: spacing.md,
+        left: spacing.md,
+        right: spacing.md,
+    },
+    heroGroupName: {
+        ...typography.title,
+        color: '#FFFFFF',
+        // NO numberOfLines limit — show full name
+        textShadowColor: 'rgba(0,0,0,0.5)',
+        textShadowOffset: { width: 1, height: 1 },
+        textShadowRadius: 4,
+    },
+    heroGroupDesc: {
+        ...typography.body,
+        color: 'rgba(255,255,255,0.80)',
+        marginTop: 2,
+        textShadowColor: 'rgba(0,0,0,0.5)',
+        textShadowOffset: { width: 1, height: 1 },
+        textShadowRadius: 3,
     },
 
     // Cover hero
@@ -598,8 +629,8 @@ const styles = StyleSheet.create({
         bottom: 0,
         left: 0,
         right: 0,
-        height: 80,
-        backgroundColor: 'rgba(0,0,0,0.25)',
+        height: 0,
+        backgroundColor: 'rgba(0,0,0,0)',
     },
 
     // Members
@@ -637,7 +668,7 @@ const styles = StyleSheet.create({
         flexDirection: 'row',
         gap: spacing.sm,
         paddingHorizontal: spacing.md,
-        paddingTop: spacing.sm,
+        padding: spacing.sm,
         borderTopWidth: StyleSheet.hairlineWidth,
     },
     footerIconBtn: {

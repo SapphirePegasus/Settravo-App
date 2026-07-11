@@ -337,7 +337,7 @@ export default function CreateGroupScreen() {
                         accessibilityLabel="Description"
                     />
 
-                    {/* Currency */}
+                    {/* Currency}
                     <Text style={[styles.fieldLabel, { color: colors.textSecondary }]}>CURRENCY</Text>
                     <View style={styles.currencyRow}>
                         {CURRENCIES.map((c) => {
@@ -363,7 +363,7 @@ export default function CreateGroupScreen() {
                                 </Pressable>
                             );
                         })}
-                    </View>
+                    </View>*/}
 
                     {error ? (
                         <Text style={[typography.caption, { color: colors.danger, marginTop: spacing.md }]}>{error}</Text>
@@ -458,7 +458,7 @@ const styles = StyleSheet.create({
         paddingHorizontal: spacing.md,
     },
     submitBtn: {
-        marginTop: spacing.xl,
+        marginTop: spacing.xxl,
         height: 56,
         borderRadius: radii.md,
         alignItems: 'center',

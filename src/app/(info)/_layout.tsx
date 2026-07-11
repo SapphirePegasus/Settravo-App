@@ -36,6 +36,7 @@ export default function InfoLayout() {
         <Stack screenOptions={screenOptions}>
             <Stack.Screen name="feedback" options={{ title: 'Feedback' }} />
             <Stack.Screen name="help" options={{ title: 'Help' }} />
+            <Stack.Screen name="privacy" options={{ title: 'Privacy' }} />
             <Stack.Screen name="about" options={{ title: 'About' }} />
         </Stack>
     );

@@ -35,7 +35,12 @@ function StatCardInner({ label, paise, colorRole = 'neutral' }: StatCardProps) {
 
     return (
         <View style={[styles.card, { backgroundColor: colors.card, borderColor: colors.cardBorder }]}>
-            <Text style={[typography.label, { color: colors.textSecondary }]} numberOfLines={1}>
+            <Text
+                style={[typography.label, { color: colors.textSecondary }]} 
+                numberOfLines={2}
+                adjustsFontSizeToFit
+                minimumFontScale={0.75}
+            >
                 {label.toUpperCase()}
             </Text>
             <Text style={[typography.monoLg, { color: amountColor, marginTop: spacing.xs }]} numberOfLines={1}>

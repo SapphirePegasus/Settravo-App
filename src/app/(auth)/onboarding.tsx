@@ -7,12 +7,6 @@
  * After successful name submission, navigates to /(tabs) with replace
  * (prevents back navigation to onboarding after setup is complete).
  *
- * Layout (per spec):
- *  - Full-bleed onboardbg.png via ImageBackground (StyleSheet.absoluteFill)
- *  - Centered KeyboardAvoidingView with the form content
- *  - App wordmark, tagline, name input, Get Started button
- *  - Status bar: white (image background is dark-ish)
- *
  * Moved from: src/components/OnboardingScreen.tsx (deprecated — delete after this)
  */
 
@@ -30,12 +24,22 @@ import {
     View,
 } from 'react-native';
 import { StatusBar } from 'expo-status-bar';
+import * as Linking from 'expo-linking';
+import { BlurView, BlurTargetView } from 'expo-blur';
 import { ZodError } from 'zod';
 
 import { AppAssets } from '@/theme/assets';
 import { spacing, typography, radii } from '@/theme';
 import { useAuthStore } from '@/stores/authStore';
 import { UpdateDisplayNameSchema } from '@/validation/schemas';
+
+const PRIVACY_POLICY_URL = 'https://legal.sapphirepegasus.com/privacy-policy';
+
+// Perf-conscious choice: only blurs on Android 12+ (SDK 31+, the efficient
+// RenderNode path). Older Android falls back to 'none' — a plain
+// semi-transparent view — rather than paying the RenderScript performance
+// penalty per the Expo v55 docs' Performance guidance.
+const ANDROID_BLUR_METHOD = 'dimezisBlurViewSdk31Plus';
 
 export default function OnboardingScreen() {
     const router = useRouter();
@@ -46,13 +50,16 @@ export default function OnboardingScreen() {
     const [loading, setLoading] = useState(false);
 
     const inputRef = useRef<TextInput>(null);
+    // The photo behind everything is the "target" all BlurViews sample from.
+    // One BlurTargetView is enough for both the input and button blurs
+    // (per docs — cheaper than one target per blur).
+    const blurTargetRef = useRef<View | null>(null);
 
     // ── Submit ────────────────────────────────────────────────────────────────
 
     const handleSubmit = useCallback(async () => {
         setError(null);
 
-        // Client-side validation (mirrors server-side Zod schema)
         try {
             UpdateDisplayNameSchema.parse({ displayName: name });
         } catch (err) {
@@ -65,7 +72,6 @@ export default function OnboardingScreen() {
         setLoading(true);
         try {
             await setDisplayName(name.trim());
-            // Root layout re-evaluates: deviceUser.displayName is now set → shows (tabs)
             router.replace('/(tabs)');
         } catch (err) {
             const message = err instanceof Error ? err.message : 'Failed to save name';
@@ -75,53 +81,82 @@ export default function OnboardingScreen() {
         }
     }, [name, setDisplayName, router]);
 
+    const handleOpenPrivacyPolicy = useCallback(async () => {
+        try {
+            const supported = await Linking.canOpenURL(PRIVACY_POLICY_URL);
+            if (supported) {
+                await Linking.openURL(PRIVACY_POLICY_URL);
+            }
+        } catch {
+            // Non-critical navigation action — silently no-op on failure.
+        }
+    }, []);
+
     const isSubmitEnabled = name.trim().length > 0 && !loading;
 
     // ── Render ────────────────────────────────────────────────────────────────
 
     return (
-        <>
+        <View style={styles.root}>
             <StatusBar style="light" />
-            <ImageBackground
-                source={AppAssets.onboardBg}
-                style={styles.bg}
-                resizeMode="cover"
-            >
-                {/* Scrim — ensures text is readable regardless of image brightness */}
-                <View style={styles.scrim} />
 
-                <KeyboardAvoidingView
-                    style={styles.flex}
-                    behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            {/* Everything visual that BlurViews will sample from lives inside
+                this BlurTargetView — required for real blur on Android. */}
+            <BlurTargetView ref={blurTargetRef} style={StyleSheet.absoluteFill}>
+                <ImageBackground
+                    source={AppAssets.onboardBg}
+                    style={styles.bg}
+                    resizeMode="cover"
                 >
-                    <View style={styles.content}>
-                        {/* Wordmark */}
-                        <Text style={styles.wordmark}>Settravo</Text>
+                    <View style={styles.scrim} />
+                </ImageBackground>
+            </BlurTargetView>
 
-                        {/* Tagline */}
-                        <Text style={styles.tagline}>Split bills,</Text>
-                        <Text style={styles.taglineSub}>not friendship</Text>
+            <KeyboardAvoidingView
+                style={styles.flex}
+                // iOS: 'padding' works reliably out of the box.
+                // Android: leave undefined — SDK 55 defaults to edge-to-edge,
+                // which already handles resize via adjustResize. Adding
+                // 'height' here double-resizes and causes the visible jump.
+                behavior={Platform.OS === 'ios' ? 'padding' : undefined}
+            >
+                <View style={styles.content}>
+                    <Text style={styles.taglineLine1}>Split bills,</Text>
+                    <Text style={styles.taglineLine2}>not friendship</Text>
 
-                        <View style={styles.spacer} />
+                    <Text style={styles.subtitle}>
+                        Enter your display name, create groups, add expenses, split
+                        fairly — and a lot more, without the awkward maths.
+                    </Text>
 
-                        {/* Name label */}
-                        <Text style={styles.inputLabel}>YOUR NAME</Text>
+                    <View style={styles.spacer} />
 
-                        {/* Name input */}
+                    <Text style={styles.inputLabel}>DISPLAY NAME</Text>
+
+                    {/* Frosted-glass input — BlurView supplies the blur,
+                        overflow: 'hidden' is required since BlurView ignores
+                        borderRadius directly (per docs). */}
+                    <BlurView
+                        blurTarget={blurTargetRef}
+                        blurMethod={ANDROID_BLUR_METHOD}
+                        intensity={40}
+                        tint="dark"
+                        style={[
+                            styles.inputBlur,
+                            error ? styles.inputBlurError : null,
+                        ]}
+                    >
                         <TextInput
                             ref={inputRef}
-                            style={[
-                                styles.input,
-                                error ? styles.inputError : null,
-                            ]}
-                            placeholder="e.g. Alex"
+                            style={styles.input}
                             placeholderTextColor="rgba(255,255,255,0.45)"
                             value={name}
                             onChangeText={(t) => {
                                 setName(t);
                                 if (error) setError(null);
                             }}
-                            autoFocus
+                            // autoFocus intentionally removed — keyboard should
+                            // only appear once the user taps the field.
                             autoCorrect={false}
                             autoCapitalize="words"
                             returnKeyType="done"
@@ -129,49 +164,79 @@ export default function OnboardingScreen() {
                             maxLength={50}
                             accessibilityLabel="Enter your display name"
                         />
+                    </BlurView>
 
-                        {/* Inline error */}
-                        {error ? (
-                            <Text style={styles.errorText}>{error}</Text>
-                        ) : null}
+                    {error ? (
+                        <Text style={styles.errorText}>{error}</Text>
+                    ) : null}
 
-                        {/* CTA */}
-                        <Pressable
-                            style={({ pressed }) => [
-                                styles.button,
-                                !isSubmitEnabled && styles.buttonDisabled,
-                                pressed && isSubmitEnabled && styles.buttonPressed,
+                    {/* Frosted-glass CTA — blur + a translucent green tint on
+                        top keeps brand color while still reading as glass. */}
+                    <Pressable
+                        style={({ pressed }) => [
+                            styles.button,
+                            pressed && isSubmitEnabled && styles.buttonPressed,
+                        ]}
+                        onPress={handleSubmit}
+                        disabled={!isSubmitEnabled}
+                        accessibilityRole="button"
+                        accessibilityLabel="Get Started"
+                        accessibilityState={{ disabled: !isSubmitEnabled }}
+                    >
+                        <BlurView
+                            blurTarget={blurTargetRef}
+                            blurMethod={ANDROID_BLUR_METHOD}
+                            intensity={55}
+                            tint="dark"
+                            style={StyleSheet.absoluteFill}
+                        />
+                        <View
+                            style={[
+                                StyleSheet.absoluteFill,
+                                styles.buttonTint,
+                                !isSubmitEnabled && styles.buttonTintDisabled,
                             ]}
-                            onPress={handleSubmit}
-                            disabled={!isSubmitEnabled}
-                            accessibilityRole="button"
-                            accessibilityLabel="Get Started"
-                            accessibilityState={{ disabled: !isSubmitEnabled }}
-                        >
-                            {loading ? (
-                                <ActivityIndicator color="#FFFFFF" />
-                            ) : (
-                                <Text style={styles.buttonLabel}>Get Started</Text>
-                            )}
-                        </Pressable>
-                    </View>
-                </KeyboardAvoidingView>
-            </ImageBackground>
-        </>
+                            pointerEvents="none"
+                        />
+                        {loading ? (
+                            <ActivityIndicator color="#FFFFFF" />
+                        ) : (
+                            <Text style={styles.buttonLabel}>Get Started</Text>
+                        )}
+                    </Pressable>
+
+                    <Pressable
+                        onPress={handleOpenPrivacyPolicy}
+                        hitSlop={8}
+                        accessibilityRole="link"
+                        accessibilityLabel="Read our Privacy Policy"
+                        style={({ pressed }) => [
+                            styles.privacyLink,
+                            pressed && styles.privacyLinkPressed,
+                        ]}
+                    >
+                        <Text style={styles.privacyLinkText}>Privacy Policy</Text>
+                    </Pressable>
+                </View>
+            </KeyboardAvoidingView>
+        </View>
     );
 }
 
 // ─── Styles ───────────────────────────────────────────────────────────────────
-// All colors here are intentionally hardcoded white/transparent — this screen
-// always renders over a dark background image regardless of theme mode.
+// All colors here are intentionally hardcoded white/transparent/green —
+// this screen always renders over a dark-ish photo regardless of theme mode.
 
 const styles = StyleSheet.create({
+    root: {
+        flex: 1,
+    },
     bg: {
         flex: 1,
     },
     scrim: {
         ...StyleSheet.absoluteFillObject,
-        backgroundColor: 'rgba(0,0,0,0.35)',
+        backgroundColor: 'rgba(0,0,0,0.3)',
     },
     flex: {
         flex: 1,
@@ -183,22 +248,25 @@ const styles = StyleSheet.create({
         paddingBottom: spacing.xxl,
         justifyContent: 'flex-end',
     },
-    wordmark: {
-        ...typography.heading,
-        color: '#22C55E',  // always accent green on onboard regardless of user preference
-        marginBottom: spacing.sm,
-        position: 'absolute',
-        top: 80,
-        left: spacing.lg,
-    },
-    tagline: {
+    taglineLine1: {
         ...typography.display,
-        color: '#FFFFFF',
-        marginBottom: 0,
+        color: '#14532D', // palette.green900
+        marginBottom: spacing.xs,
+        textShadowColor: 'rgba(255,255,255,0.55)',
+        textShadowOffset: { width: 0, height: 0 },
+        textShadowRadius: 6,
     },
-    taglineSub: {
+    taglineLine2: {
         ...typography.display,
-        color: 'rgba(255,255,255,0.75)',
+        color: '#14532D', // palette.green900
+        marginBottom: spacing.lg,
+        textShadowColor: 'rgba(255,255,255,0.55)',
+        textShadowOffset: { width: 0, height: 0 },
+        textShadowRadius: 6,
+    },
+    subtitle: {
+        ...typography.body,
+        color: 'rgba(255,255,255,0.85)',
         marginBottom: spacing.xl,
     },
     spacer: {
@@ -209,19 +277,22 @@ const styles = StyleSheet.create({
         color: 'rgba(255,255,255,0.7)',
         marginBottom: spacing.sm,
     },
-    input: {
+    inputBlur: {
         height: 52,
         borderRadius: radii.md,
         borderWidth: 1.5,
         borderColor: 'rgba(255,255,255,0.4)',
-        backgroundColor: 'rgba(255,255,255,0.12)',
+        overflow: 'hidden', // required: BlurView ignores borderRadius directly
+        marginBottom: spacing.sm,
+    },
+    inputBlurError: {
+        borderColor: '#F87171',
+    },
+    input: {
+        flex: 1,
         paddingHorizontal: spacing.md,
         ...typography.body,
         color: '#FFFFFF',
-        marginBottom: spacing.sm,
-    },
-    inputError: {
-        borderColor: '#F87171',
     },
     errorText: {
         ...typography.caption,
@@ -231,13 +302,16 @@ const styles = StyleSheet.create({
     button: {
         height: 56,
         borderRadius: radii.md,
-        backgroundColor: '#22C55E',
+        overflow: 'hidden', // required: BlurView ignores borderRadius directly
         alignItems: 'center',
         justifyContent: 'center',
         marginTop: spacing.md,
     },
-    buttonDisabled: {
-        opacity: 0.45,
+    buttonTint: {
+        backgroundColor: 'rgba(34,197,94,0.55)', // green500 @ 55% — glass CTA
+    },
+    buttonTintDisabled: {
+        backgroundColor: 'rgba(34,197,94,0.25)',
     },
     buttonPressed: {
         opacity: 0.85,
@@ -247,5 +321,19 @@ const styles = StyleSheet.create({
         fontWeight: '600',
         color: '#FFFFFF',
         fontSize: 16,
+    },
+    privacyLink: {
+        alignSelf: 'center',
+        marginTop: spacing.lg,
+        paddingVertical: spacing.xs,
+        paddingHorizontal: spacing.sm,
+    },
+    privacyLinkPressed: {
+        opacity: 0.6,
+    },
+    privacyLinkText: {
+        ...typography.caption,
+        color: 'rgba(255,255,255,0.65)',
+        textDecorationLine: 'underline',
     },
 });

@@ -119,7 +119,7 @@ export function FABSheet({ visible, onDismiss, onJoinGroup, onCreateGroup, onCre
                 </Pressable>
 
                 {/* Create Expense */}
-                <View style={[styles.option, { backgroundColor: colors.card }]}>
+                {/*<View style={[styles.option, { backgroundColor: colors.card }]}>
                     <View style={[styles.optionIconBox, { backgroundColor: colors.accentLight }]}>
                         <Icon name="money.receipt" size={24} color={colors.accent} />
                     </View>
@@ -134,7 +134,7 @@ export function FABSheet({ visible, onDismiss, onJoinGroup, onCreateGroup, onCre
                 </View>
 
                 {/* Trip picker — inline list when creating expense */}
-                {trips.length > 0 && (
+                {/*trips.length > 0 && (
                     <View style={styles.tripList}>
                         {trips.map((trip) => (
                             <Pressable
@@ -155,7 +155,7 @@ export function FABSheet({ visible, onDismiss, onJoinGroup, onCreateGroup, onCre
                             </Pressable>
                         ))}
                     </View>
-                )}
+                )*/}
             </View>
         </Modal>
     );

@@ -190,9 +190,9 @@ export default function QRScreen() {
                     </Pressable>
 
                     <Pressable
-                        style={[styles.primaryBtn, { backgroundColor: colors.accent }]}
+                        style={[styles.primaryBtn, { backgroundColor: colors.accent }, expired && styles.disabledBtn]}
                         onPress={handleShareCode}
-                        disabled={!trip?.joinCode}
+                        disabled={expired}
                         accessibilityRole="button"
                         accessibilityLabel="Share join code"
                     >
@@ -243,6 +243,7 @@ const styles = StyleSheet.create({
         borderBottomWidth: StyleSheet.hairlineWidth,
     },
     headerBtn: { width: 44, height: 44, alignItems: 'center', justifyContent: 'center' },
+    disabledBtn: { opacity: 0.38 },
     content: { padding: spacing.lg, paddingBottom: spacing.xxl, alignItems: 'center' },
     qrCard: {
         padding: spacing.lg,
@@ -252,7 +253,7 @@ const styles = StyleSheet.create({
         marginBottom: spacing.lg,
         minHeight: 260,
     },
-    expiredBox: { alignItems: 'center', gap: spacing.sm },
+    expiredBox: { height: 200, width: 200, justifyContent: 'center', alignItems: 'center', gap: spacing.sm },
     codeRow: { alignItems: 'center', gap: spacing.xs, marginBottom: spacing.lg },
     codeDisplay: {
         fontSize: 36,

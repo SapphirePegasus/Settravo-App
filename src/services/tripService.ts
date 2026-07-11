@@ -250,7 +250,7 @@ export async function regenerateJoinCode(tripId: string): Promise<Trip> {
         .update({
             join_code: generateJoinCode(),
             join_code_expires_at: generateExpiresAt(),
-            cover_image_url: null,
+            cover_image_url: undefined,
         })
         .eq('id', tripId)
         .select()

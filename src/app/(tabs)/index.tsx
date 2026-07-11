@@ -131,8 +131,8 @@ export default function DashboardScreen() {
         statTranslateY.value = withDelay(120, withTiming(0, { duration: 300, easing: Easing.out(Easing.ease) }));
         listOpacity.value = withDelay(220, withTiming(1, { duration: 320, easing: Easing.out(Easing.ease) }));
         listTranslateY.value = withDelay(220, withTiming(0, { duration: 320, easing: Easing.out(Easing.ease) }));
-    // Run once on mount — empty deps is intentional here.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // Run once on mount — empty deps is intentional here.
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const statAnimStyle = useAnimatedStyle(() => ({
@@ -149,10 +149,7 @@ export default function DashboardScreen() {
         router.push(`/(trip)/${tripId}`);
     }, [router]);
 
-    const handleCreate = useCallback(async () => {
-        await Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
-        setCreateVisible(true);
-    }, []);
+
 
     return (
         <View style={[styles.root, { backgroundColor: colors.bg }]}>
@@ -172,18 +169,13 @@ export default function DashboardScreen() {
                 contentContainerStyle={{ paddingBottom: spacing.xxl + insets.bottom }}
             >
                 {/* ── Hero ──────────────────────────────────────────────── */}
-                {/* ImageBackground is a normal flow element with a fixed height.
-                    Previously it used absoluteFillObject inside a height-wrapper,
-                    which took it out of the flow — the statRow then had nothing
-                    to push it down and appeared at the top of the wrapper (status
-                    bar level). Giving ImageBackground its own height makes both
-                    it and the statRow normal flow siblings so the negative
-                    marginTop overlap works correctly. */}
+
                 <ImageBackground
                     source={heroSource}
                     style={styles.hero}
                     resizeMode="cover"
                 >
+
                     <View style={styles.heroScrim} />
 
                     {/* Floating header — position:absolute inside ImageBackground.
@@ -196,15 +188,15 @@ export default function DashboardScreen() {
                             accessibilityRole="button"
                             style={styles.heroHeaderBtn}
                         >
-                            <Icon name="header.menu" size={24} color="#FFFFFF" />
+                            <Icon name="header.menu" size={24} color={colors.text} />
                         </Pressable>
                         {/* Bell icon removed — notifications not yet implemented */}
                     </SafeAreaView>
 
                     {/* Greeting — flex-end pushes it to hero bottom */}
                     <View style={styles.heroContent}>
-                        <Text style={styles.heroWelcome}>Welcome back,</Text>
-                        <Text style={styles.heroName} numberOfLines={1}>
+                        <Text style={[styles.heroWelcome, { color: colors.text }]}>Welcome back,</Text>
+                        <Text style={[styles.heroName, { color: colors.text }]} numberOfLines={1}>
                             {displayName}
                         </Text>
                     </View>
@@ -213,10 +205,10 @@ export default function DashboardScreen() {
                 {/* Stat cards — next ScrollView sibling, negative marginTop
                     visually overlaps the hero's bottom edge. */}
                 <Animated.View style={[styles.statRow, statAnimStyle]}>
-                        <StatCard label="You are owed" paise={totalOwed} colorRole="owed" />
-                        <StatCard label="You owe" paise={totalOwe} colorRole="owe" />
-                        <StatCard label="Total spent" paise={totalSpent} colorRole="neutral" />
-                    </Animated.View>
+                    <StatCard label="Others owe to you" paise={totalOwed} colorRole="owed" />
+                    <StatCard label="You owe to others" paise={totalOwe} colorRole="owe" />
+                    <StatCard label="Total expense" paise={totalSpent} colorRole="neutral" />
+                </Animated.View>
 
                 {/* ── Recent groups ──────────────────────────────────────── */}
                 <Animated.View style={[styles.section, listAnimStyle]}>
@@ -239,9 +231,7 @@ export default function DashboardScreen() {
                         <EmptyState
                             iconKey="nav.groups"
                             title="No groups yet"
-                            subtitle="Create your first group to start splitting expenses."
-                            actionLabel="Create Group"
-                            onAction={handleCreate}
+                            subtitle="Create or Join your first group from by clicking the + (plus) icon below."
                         />
                     ) : isLoading && trips.length === 0 ? (
                         <View style={styles.list}>
@@ -302,7 +292,7 @@ const styles = StyleSheet.create({
     },
     heroScrim: {
         ...StyleSheet.absoluteFillObject,  // scoped to ImageBackground, not screen
-        backgroundColor: 'rgba(0,0,0,0.32)',
+        backgroundColor: 'rgba(0,0,0,0)',
     },
 
     // Header — absolute inside ImageBackground, anchored to its top edge.
@@ -331,13 +321,11 @@ const styles = StyleSheet.create({
     },
     heroWelcome: {
         ...typography.caption,
-        color: 'rgba(255,255,255,0.80)',
         marginBottom: 4,
     },
     heroName: {
         fontSize: 32,
         fontWeight: '700',
-        color: '#FFFFFF',
         letterSpacing: -0.5,
     },
 
