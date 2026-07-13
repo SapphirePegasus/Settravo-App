@@ -10,6 +10,8 @@
  *  - Money is always a positive integer (paise)
  *  - Join codes are uppercase alphanumeric exactly 4 chars
  *  - UUIDs are validated as v4 format
+ *
+ * Phase-3 addition: SETTLE_PAIR offline queue item schema.
  */
 
 import { z } from 'zod';
@@ -186,6 +188,8 @@ export function validateSplitTotal(
  * Validates the JSON blob stored in SecureStore for offline-first boot.
  * Any corruption or tampered entry is rejected and the cache is evicted.
  * MUST be kept in sync with the DeviceUser domain type.
+ * (isProvisional is deliberately absent — provisional identities are never
+ * persisted.)
  */
 export const DeviceUserCacheSchema = z.object({
     id: uuid,
@@ -200,6 +204,89 @@ export const DeviceUserCacheSchema = z.object({
 });
 
 export type DeviceUserCache = z.infer<typeof DeviceUserCacheSchema>;
+
+// ─── Recurring bill templates (Phase 5) ──────────────────────────────────────
+
+const dueDayMonthly = z
+    .number()
+    .int()
+    .min(1, 'Day must be between 1 and 28')
+    .max(28, 'Use day 1–28 so the bill exists in every month');
+
+const dueDayWeekly = z
+    .number()
+    .int()
+    .min(1, 'Weekday must be 1 (Mon) to 7 (Sun)')
+    .max(7, 'Weekday must be 1 (Mon) to 7 (Sun)');
+
+export const CreateTemplateSchema = z
+    .object({
+        tripId: uuid,
+        paidByMember: uuid,
+        title: z
+            .string()
+            .trim()
+            .min(1, 'Bill name is required')
+            .max(120, 'Name must be 120 characters or fewer'),
+        category: z.enum(['food', 'transport', 'stay', 'misc']).nullable().optional(),
+        amountMoney: paise,
+        recurrence: z.enum(['monthly', 'weekly']),
+        dueDay: z.number().int(),
+    })
+    .superRefine((data, ctx) => {
+        const check =
+            data.recurrence === 'monthly'
+                ? dueDayMonthly.safeParse(data.dueDay)
+                : dueDayWeekly.safeParse(data.dueDay);
+        if (!check.success) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['dueDay'],
+                message: check.error.issues[0]?.message ?? 'Invalid due day',
+            });
+        }
+    });
+
+export type CreateTemplateInput = z.infer<typeof CreateTemplateSchema>;
+
+export const EditTemplateSchema = z
+    .object({
+        id: uuid,
+        paidByMember: uuid.optional(),
+        title: z.string().trim().min(1).max(120).optional(),
+        category: z.enum(['food', 'transport', 'stay', 'misc']).nullable().optional(),
+        amountMoney: paise.optional(),
+        recurrence: z.enum(['monthly', 'weekly']).optional(),
+        dueDay: z.number().int().optional(),
+        isActive: z.boolean().optional(),
+    })
+    .superRefine((data, ctx) => {
+        // dueDay can only be validated against a recurrence — require them
+        // to travel together on edit.
+        if (data.dueDay !== undefined && data.recurrence === undefined) {
+            ctx.addIssue({
+                code: z.ZodIssueCode.custom,
+                path: ['recurrence'],
+                message: 'recurrence must accompany dueDay changes',
+            });
+            return;
+        }
+        if (data.dueDay !== undefined && data.recurrence !== undefined) {
+            const check =
+                data.recurrence === 'monthly'
+                    ? dueDayMonthly.safeParse(data.dueDay)
+                    : dueDayWeekly.safeParse(data.dueDay);
+            if (!check.success) {
+                ctx.addIssue({
+                    code: z.ZodIssueCode.custom,
+                    path: ['dueDay'],
+                    message: check.error.issues[0]?.message ?? 'Invalid due day',
+                });
+            }
+        }
+    });
+
+export type EditTemplateInput = z.infer<typeof EditTemplateSchema>;
 
 // ─── Offline queue item ───────────────────────────────────────────────────────
 
@@ -246,10 +333,21 @@ const deleteExpenseQueueItemSchema = offlineQueueBaseSchema.extend({
     }),
 });
 
+const settlePairQueueItemSchema = offlineQueueBaseSchema.extend({
+    type: z.literal('SETTLE_PAIR'),
+    payload: z.object({
+        tripId: uuid,
+        memberAId: uuid,
+        memberBId: uuid,
+        settled: z.boolean(),
+    }),
+});
+
 export const OfflineQueueItemSchema = z.discriminatedUnion('type', [
     addExpenseQueueItemSchema,
     editExpenseQueueItemSchema,
     deleteExpenseQueueItemSchema,
+    settlePairQueueItemSchema,
 ]);
 
 export type OfflineQueueItemValidated = z.infer<typeof OfflineQueueItemSchema>;

@@ -6,6 +6,12 @@
  * Components NEVER import from supabase.ts (generated types).
  *
  * All money is integer paise. Display-only conversion happens in money.ts.
+ *
+ * Phase-3 additions:
+ *  - DeviceUser.isProvisional: offline boot with a session but no cached
+ *    profile serves a provisional identity (auth gate keeps the user inside
+ *    the app instead of bouncing them to onboarding they can't complete).
+ *  - SETTLE_PAIR offline queue item: settling now works offline too.
  */
 
 // ─── Identity ────────────────────────────────────────────────────────────────
@@ -19,6 +25,13 @@ export interface DeviceUser {
     avatarColor: string | null;
     createdAt: string;
     lastSeen: string;
+    /**
+     * True only for the in-memory identity built during an offline boot when
+     * the SecureStore profile cache was missing. The user IS onboarded (a
+     * session exists) — their profile just hasn't been readable yet. Never
+     * persisted; replaced by the real profile as soon as connectivity returns.
+     */
+    isProvisional?: boolean;
 }
 
 // ─── Trip ────────────────────────────────────────────────────────────────────
@@ -103,7 +116,7 @@ export interface Settlement {
 
 /**
  * Base fields shared by every offline queue item.
- * retryCount starts at 0. Items exceeding MAX_RETRY_COUNT are moved
+ * retryCount starts at 0. Items exceeding OFFLINE_MAX_RETRIES are moved
  * to the dead-letter queue by useOfflineSync.
  */
 type OfflineQueueBase = {
@@ -126,6 +139,15 @@ export type OfflineQueueItem =
     | (OfflineQueueBase & {
         type: 'DELETE_EXPENSE';
         payload: { expenseId: string; tripId: string };
+    })
+    | (OfflineQueueBase & {
+        type: 'SETTLE_PAIR';
+        payload: {
+            tripId: string;
+            memberAId: string;
+            memberBId: string;
+            settled: boolean;
+        };
     });
 
 /** Dead-letter item: an OfflineQueueItem that permanently failed. */
@@ -133,6 +155,45 @@ export type DeadLetterItem = OfflineQueueItem & { failureReason: string };
 
 /** Maximum retry attempts before an item is moved to dead-letter. */
 export const OFFLINE_MAX_RETRIES = 5;
+
+// ─── Recurring bill templates (Phase 5) ──────────────────────────────────────
+
+export type Recurrence = 'monthly' | 'weekly';
+
+/**
+ * A recurring bill definition. Expenses are lazily materialized from it
+ * server-side (settravo_materialize_recurring) when the group is opened —
+ * one per (template, period), guaranteed by a DB unique index.
+ */
+export interface ExpenseTemplate {
+    id: string;
+    tripId: string;
+    createdByDevice: string;   // FK → TravelAppUsers.id
+    paidByMember: string;      // FK → TravelAppMembers.id
+    title: string;
+    category: ExpenseCategory | null;
+    /** Integer paise. */
+    amountMoney: number;
+    /** v1 always 'equal'; 'custom' reserved for premium. */
+    splitMode: 'equal' | 'custom';
+    recurrence: Recurrence;
+    /** Monthly: day of month 1–28. Weekly: ISO weekday 1–7 (Mon=1). */
+    dueDay: number;
+    /** ISO date YYYY-MM-DD. Occurrences before this never materialize. */
+    startDate: string;
+    isActive: boolean;
+    createdAt: string;
+    updatedAt: string;
+}
+
+/**
+ * Free-tier cap: one active recurring bill per user (across their trips).
+ * Enforced in the UI/service layer; Settravo Plus lifts it (later phase).
+ * The server independently caps 20 active templates per trip as abuse
+ * protection.
+ */
+export const FREE_ACTIVE_TEMPLATE_LIMIT = 1;
+
 // ─── Connection status ───────────────────────────────────────────────────────
 
 export type ConnectionStatus = 'connected' | 'reconnecting' | 'offline';
