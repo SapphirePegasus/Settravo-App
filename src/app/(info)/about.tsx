@@ -19,7 +19,7 @@ import { typography, spacing, radii } from '@/theme';
 
 const PLAY_STORE_URL =
     'https://play.google.com/store/apps/details?id=com.sapphirepegasus.settravo';
-const WEBSITE_URL = 'https://settravo.sapphirepegasus.com';
+const WEBSITE_URL = 'https://www.sapphirepegasus.com';
 
 export default function AboutScreen() {
     const colors = useThemeColors();

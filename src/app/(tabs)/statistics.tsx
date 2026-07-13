@@ -41,9 +41,9 @@ import { useThemeColors } from '../../hooks/useThemeColors';
 import { useConnectionStore } from '../../stores/connectionStore';
 import { useExpenseStore } from '../../stores/expenseStore';
 import { useMemberStore } from '../../stores/memberStore';
-import type { Expense, ExpenseCategory, Split } from '../../types/domain';
+import type { ExpenseCategory } from '../../types/domain';
 import type { IconKey } from '../../config/icons';
-import { calculateSettlements } from '../../utils/settlement';
+import { computeMyBalances } from '../../utils/balances';
 import { formatRupees } from '../../utils/money';
 import { typography, spacing, radii, shadows } from '@/theme';
 
@@ -144,33 +144,16 @@ export default function StatisticsScreen() {
     }, [trips, allExpenses, allMembers, timeFilter]);
 
     // ── Current balances (NOT time-filtered — must match the Settle screen) ───
+    // Shared engine (utils/balances → calculateSettlements): the exact same
+    // code the Dashboard stat cards use, so the two screens cannot diverge.
     const { totalOwedToMe, totalIOwe } = useMemo(() => {
-        let owedToMe = 0;
-        let iOwe = 0;
-
-        for (const trip of trips) {
-            const myMemberId = myMemberIdByTrip.get(trip.id);
-            if (!myMemberId) continue;
-
-            const expenses: Expense[] = allExpenses[trip.id] ?? [];
-            if (expenses.length === 0) continue;
-
-            const flatSplits: Split[] = [];
-            for (const exp of expenses) {
-                for (const sp of allSplits[exp.id] ?? []) flatSplits.push(sp);
-            }
-
-            // The same tested pairwise engine as the Settle screen.
-            const pending = calculateSettlements(
-                expenses,
-                flatSplits,
-                allMembers[trip.id] ?? [],
-            );
-            for (const s of pending) {
-                if (s.toMemberId === myMemberId) owedToMe += s.amountMoney;
-                else if (s.fromMemberId === myMemberId) iOwe += s.amountMoney;
-            }
-        }
+        const { owedToMe, iOwe } = computeMyBalances(
+            trips,
+            myMemberIdByTrip,
+            allExpenses,
+            allSplits,
+            allMembers,
+        );
         return { totalOwedToMe: owedToMe, totalIOwe: iOwe };
     }, [trips, myMemberIdByTrip, allExpenses, allSplits, allMembers]);
 

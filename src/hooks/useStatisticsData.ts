@@ -16,34 +16,26 @@
  *  3. A correct identity map: tripId → MY member-id in that trip
  *     (matched via member.deviceId === deviceUser.id).
  *
+ * Balance-parity refactor: cache hydration lives in lib/tripHydration and
+ * the identity map in utils/balances so the Dashboard (useMyBalances) uses
+ * the exact same code paths. This hook keeps what is unique to Statistics:
+ * the network refresh policy.
+ *
  * Mount once in the Statistics screen. Reuses useTrips (idempotent) so the
  * trip list itself is also loaded/cached without duplicating that logic.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import {
-    cacheMembers,
-    cacheTripData,
-    readCachedExpenses,
-    readCachedMembers,
-    readCachedSplits,
-} from '../lib/localCache';
+import { cacheMembers, cacheTripData } from '../lib/localCache';
+import { hydrateTripFromCache, indexSplitsByExpense } from '../lib/tripHydration';
 import { fetchAllSplitsForTrip, fetchExpenses } from '../services/expenseService';
 import { fetchMembers } from '../services/memberService';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useExpenseStore } from '../stores/expenseStore';
 import { useMemberStore } from '../stores/memberStore';
 import { useAuthStore } from '../stores/authStore';
-import type { Split } from '../types/domain';
+import { buildMyMemberIdMap } from '../utils/balances';
 import { useTrips } from './useTrips';
-
-function indexSplitsByExpense(splits: Split[]): Record<string, Split[]> {
-    const byExpense: Record<string, Split[]> = {};
-    for (const split of splits) {
-        (byExpense[split.expenseId] ??= []).push(split);
-    }
-    return byExpense;
-}
 
 export function useStatisticsData() {
     const { trips } = useTrips();
@@ -56,28 +48,6 @@ export function useStatisticsData() {
 
     // Trips already network-refreshed by this hook this session.
     const refreshedTrips = useRef<Set<string>>(new Set());
-
-    /** Hydrate one trip from SQLite into the stores — synchronous, offline-safe. */
-    const hydrateTripFromCache = useCallback((tripId: string) => {
-        const expenseState = useExpenseStore.getState();
-        if (!expenseState.expenses[tripId] || expenseState.expenses[tripId].length === 0) {
-            const cachedExpenses = readCachedExpenses(tripId);
-            if (cachedExpenses.length > 0) {
-                expenseState.setExpenses(tripId, cachedExpenses);
-                const cachedSplits = readCachedSplits(tripId);
-                for (const [expenseId, splits] of Object.entries(indexSplitsByExpense(cachedSplits))) {
-                    expenseState.setSplits(expenseId, splits);
-                }
-            }
-        }
-        const memberState = useMemberStore.getState();
-        if (!memberState.members[tripId] || memberState.members[tripId].length === 0) {
-            const cachedMembers = readCachedMembers(tripId);
-            if (cachedMembers.length > 0) {
-                memberState.setMembers(tripId, cachedMembers);
-            }
-        }
-    }, []);
 
     /** Network refresh of one trip with write-through. Never throws. */
     const refreshTrip = useCallback(
@@ -120,7 +90,7 @@ export function useStatisticsData() {
             await Promise.all(due.map((t) => refreshTrip(t.id)));
             for (const t of due) refreshedTrips.current.add(t.id);
         },
-        [trips, hydrateTripFromCache, refreshTrip],
+        [trips, refreshTrip],
     );
 
     // Initial load: runs when the trip list becomes available/changes.
@@ -145,19 +115,14 @@ export function useStatisticsData() {
 
     /**
      * tripId → my member-id in that trip. THE identity fix: splits and
-     * expenses reference member IDs, never the auth uid.
+     * expenses reference member IDs, never the auth uid. Shared with the
+     * Dashboard via utils/balances so both screens resolve identity
+     * identically.
      */
-    const myMemberIdByTrip = useMemo(() => {
-        const map = new Map<string, string>();
-        if (!deviceUser) return map;
-        for (const trip of trips) {
-            const mine = (membersByTrip[trip.id] ?? []).find(
-                (m) => m.deviceId === deviceUser.id,
-            );
-            if (mine) map.set(trip.id, mine.id);
-        }
-        return map;
-    }, [trips, membersByTrip, deviceUser]);
+    const myMemberIdByTrip = useMemo(
+        () => buildMyMemberIdMap(trips, membersByTrip, deviceUser?.id),
+        [trips, membersByTrip, deviceUser?.id],
+    );
 
     return {
         trips,

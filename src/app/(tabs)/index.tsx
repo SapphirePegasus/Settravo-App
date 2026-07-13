@@ -49,8 +49,8 @@ import { SkeletonTripCard } from '../../components/ui/Skeleton';
 import { useToast } from '../../components/Toast';
 import { useThemeContext } from '@/context/ThemeContext';
 import { useThemeColors } from '../../hooks/useThemeColors';
+import { useMyBalances } from '../../hooks/useMyBalances';
 import { useTrips } from '../../hooks/useTrips';
-import { useExpenseStore } from '../../stores/expenseStore';
 import { useAuthStore } from '../../stores/authStore';
 import { useTripStore } from '../../stores/tripStore';
 import { AppAssets } from '@/theme/assets';
@@ -69,10 +69,17 @@ export default function DashboardScreen() {
 
     const deviceUser = useAuthStore((s) => s.deviceUser);
     const offlineQueue = useTripStore((s) => s.offlineQueue);
-    const allExpenses = useExpenseStore((s) => s.expenses);
-    const allSplits = useExpenseStore((s) => s.splits);
 
     const { trips, isLoading, fetchError, refresh } = useTrips();
+
+    // Cross-trip balances — SAME engine as Statistics and the Settle screen
+    // (utils/balances → calculateSettlements). Replaces the old inline loop
+    // that compared split member-IDs against the auth uid (wrong ID space)
+    // and ignored other members' settle state — the source of the
+    // dashboard/statistics mismatch. useMyBalances also cache-hydrates every
+    // joined trip, so the numbers are complete on a fresh launch, offline
+    // included. Balances are all-time-until-settled; totalSpent is all-time.
+    const { owedToMe: totalOwed, iOwe: totalOwe, totalSpent } = useMyBalances();
     const [createVisible, setCreateVisible] = useState(false);
     const [menuDrawerVisible, setMenuDrawerVisible] = useState(false);
 
@@ -93,24 +100,6 @@ export default function DashboardScreen() {
         }
         return map;
     }, [offlineQueue]);
-
-    const { totalOwed, totalOwe, totalSpent } = useMemo(() => {
-        let owed = 0, owe = 0, spent = 0;
-        const flatSplits = Object.values(allSplits).flat();
-        for (const expList of Object.values(allExpenses)) {
-            for (const exp of expList) {
-                spent += exp.amountMoney;
-                const mySplit = flatSplits.find(
-                    (sp) => sp.expenseId === exp.id && sp.memberId === deviceUser?.id,
-                );
-                if (mySplit && !mySplit.isSettled) {
-                    if (exp.paidByMember === deviceUser?.id) owed += exp.amountMoney - mySplit.shareMoney;
-                    else owe += mySplit.shareMoney;
-                }
-            }
-        }
-        return { totalOwed: owed, totalOwe: owe, totalSpent: spent };
-    }, [allExpenses, allSplits, deviceUser?.id]);
 
     const heroSource = mode === 'dark' ? AppAssets.nightBg : AppAssets.dayBg;
     const recentTrips = trips.slice(0, MAX_RECENT);
