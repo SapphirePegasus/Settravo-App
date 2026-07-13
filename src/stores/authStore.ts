@@ -11,6 +11,12 @@
  *  isReady: false → initializeIdentity() → isReady: true
  *  The root layout waits on isReady before rendering any screen.
  *
+ * Phase-3 additions:
+ *  - initErrorCode: lets the root layout distinguish "first launch offline"
+ *    (friendly explainer + auto-retry) from genuine failures.
+ *  - retryInitialize(): user-initiated or connectivity-triggered re-run of
+ *    the boot sequence after a failure.
+ *
  * Important: do NOT persist this store with zustand/middleware/persist.
  * The Supabase session is persisted by the SDK via the localStorage polyfill.
  * Duplicating it in Zustand causes double-restore conflicts.
@@ -18,6 +24,7 @@
 
 import type { Session } from '@supabase/supabase-js';
 import { create } from 'zustand';
+import { AppError, type AppErrorCode } from '../errors/AppError';
 import { supabase } from '../lib/supabase';
 import { initializeDeviceIdentity, updateDisplayName } from '../services/authService';
 import type { DeviceUser } from '../types/domain';
@@ -31,11 +38,17 @@ interface AuthState {
     deviceUser: DeviceUser | null;
     /** Active Supabase session. Null before first sign-in. */
     session: Session | null;
-    /** Error from the last initialization attempt. */
+    /** Error message from the last initialization attempt. */
     initError: string | null;
+    /** Typed code for the last init failure — 'NETWORK' = first launch offline. */
+    initErrorCode: AppErrorCode | null;
+    /** Guards concurrent boots (auto-retry + manual retry racing). */
+    isInitializing: boolean;
 
     // Actions
     initializeIdentity: () => Promise<void>;
+    /** Re-run boot after a failure. No-op if already booted or in flight. */
+    retryInitialize: () => Promise<void>;
     setDisplayName: (name: string) => Promise<void>;
     setSession: (session: Session | null) => void;
 }
@@ -47,25 +60,49 @@ export const useAuthStore = create<AuthState>((set, get) => ({
     deviceUser: null,
     session: null,
     initError: null,
+    initErrorCode: null,
+    isInitializing: false,
 
     /**
      * Run the full identity initialization sequence.
      * Call once from the root layout's useEffect.
-     * Safe to call multiple times — subsequent calls are no-ops if already ready.
+     * Safe to call multiple times — no-ops if already booted or in flight.
      */
     initializeIdentity: async () => {
-        if (get().isReady) {
+        const { isReady, deviceUser, isInitializing } = get();
+        if ((isReady && deviceUser) || isInitializing) {
             return;
         }
 
+        set({ isInitializing: true });
         try {
-            const deviceUser = await initializeDeviceIdentity();
-            set({ deviceUser, isReady: true, initError: null });
+            const user = await initializeDeviceIdentity();
+            set({
+                deviceUser: user,
+                isReady: true,
+                initError: null,
+                initErrorCode: null,
+                isInitializing: false,
+            });
         } catch (err) {
             const message = err instanceof Error ? err.message : 'Unknown auth error';
+            const code: AppErrorCode = err instanceof AppError ? err.code : 'UNKNOWN';
             console.error('[authStore]', message);
-            set({ isReady: true, initError: message });
+            set({
+                isReady: true,
+                initError: message,
+                initErrorCode: code,
+                isInitializing: false,
+            });
         }
+    },
+
+    retryInitialize: async () => {
+        const { initError, isInitializing } = get();
+        if (!initError || isInitializing) return;
+        // Reset the failure state and re-run the same sequence.
+        set({ isReady: false, initError: null, initErrorCode: null });
+        await get().initializeIdentity();
     },
 
     /**

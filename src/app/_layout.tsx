@@ -3,17 +3,20 @@
  *
  * Root layout. Single responsibilities:
  *  1. Sentry initialised at module load (before any component renders).
- *  2. Wraps the tree: GestureHandler → SafeArea → ToastProvider → AppErrorBoundary → ThemeProvider.
- *  3. Boots identity (initializeIdentity) and waits for isReady.
- *  4. Subscribes to auth changes + NetInfo (single subscriber each).
- *  5. Mounts useOfflineSync() once — never in individual screens.
- *  6. Auth gate: no user → redirect to (auth)/onboarding.
- *  7. ThemeProvider is inside the tree so all screens have access.
+ *  2. Local cache (SQLite) initialised at module load — hooks hydrate from it.
+ *  3. Wraps the tree: GestureHandler → SafeArea → ToastProvider → AppErrorBoundary → ThemeProvider.
+ *  4. Boots identity (initializeIdentity) and waits for isReady.
+ *  5. Subscribes to auth changes + NetInfo (single subscriber each).
+ *  6. Mounts useOfflineSync() + SyncStatusBanner once — never in screens.
+ *  7. Auth gate: Stack.Protected declarative guards (SDK 53+ pattern).
  *
- * Removed from here (Phase B):
- *  - OnboardingScreen component: moved to app/(auth)/onboarding.tsx
- *  - useColorScheme() / isDark: all theming now from ThemeProvider
- *  - Hardcoded hex color strings
+ * Phase-3 boot UX:
+ *  - initializeIdentity now only fails on TRUE first launch offline
+ *    (authService guarantees a session never throws). That case gets a
+ *    friendly explainer with a Retry button, and retries automatically the
+ *    moment connectivity returns.
+ *  - Provisional users (offline boot, uncached profile) pass the auth gate —
+ *    they are onboarded; their profile refreshes in the background.
  */
 
 import * as Sentry from '@sentry/react-native';
@@ -21,14 +24,16 @@ import NetInfo from '@react-native-community/netinfo';
 import { SplashScreen, Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { useCallback, useEffect, useMemo } from 'react';
-import { ActivityIndicator, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, Pressable, StyleSheet, Text, View } from 'react-native';
 import { GestureHandlerRootView } from 'react-native-gesture-handler';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
 import { AppErrorBoundary } from '../components/AppErrorBoundary';
+import { SyncStatusBanner } from '../components/SyncStatusBanner';
 import { ToastProvider } from '../components/Toast';
 import { ThemeProvider, useThemeContext } from '@/context/ThemeContext';
 import { useOfflineSync } from '../hooks/useOfflineSync';
+import { initLocalCache } from '../lib/localCache';
 import { subscribeToAuthChanges, useAuthStore } from '../stores/authStore';
 import { useConnectionStore } from '../stores/connectionStore';
 
@@ -43,6 +48,11 @@ Sentry.init({
     enableNativeNagger: false,
     enableAutoPerformanceTracing: !__DEV__,
 });
+
+// ─── Local cache ──────────────────────────────────────────────────────────────
+// Module scope: synchronous, must be ready before any hook hydrates from it.
+
+initLocalCache();
 
 SplashScreen.preventAutoHideAsync();
 
@@ -70,10 +80,13 @@ function RootLayoutInner() {
     const { colors } = useThemeContext();
 
     const initializeIdentity = useAuthStore((s) => s.initializeIdentity);
+    const retryInitialize = useAuthStore((s) => s.retryInitialize);
     const isReady = useAuthStore((s) => s.isReady);
     const deviceUser = useAuthStore((s) => s.deviceUser);
     const initError = useAuthStore((s) => s.initError);
+    const initErrorCode = useAuthStore((s) => s.initErrorCode);
     const setNetworkOnline = useConnectionStore((s) => s.setNetworkOnline);
+    const networkOnline = useConnectionStore((s) => s.networkOnline);
 
     // ── Identity boot ─────────────────────────────────────────────────────────
     useEffect(() => {
@@ -99,9 +112,14 @@ function RootLayoutInner() {
         return () => { unsubscribe(); };
     }, [setNetworkOnline]);
 
+    // ── Auto-retry a failed first-launch boot when connectivity returns ──────
+    useEffect(() => {
+        if (initError && networkOnline) {
+            retryInitialize();
+        }
+    }, [initError, networkOnline, retryInitialize]);
+
     // ── Offline queue — mounted once at root ──────────────────────────────────
-    // Any additional mount (e.g. in a trip screen) creates a race condition
-    // where multiple instances replay the same queue items concurrently.
     useOfflineSync();
 
     // ── Splash screen gate ────────────────────────────────────────────────────
@@ -111,13 +129,7 @@ function RootLayoutInner() {
 
     useEffect(() => { hideSplash(); }, [hideSplash]);
 
-    // FIX (Rules of Hooks violation): this hook must run unconditionally on
-    // every render of this component instance. It was previously declared
-    // after the `!isReady` / `initError` early returns, meaning it was
-    // skipped during the loading phase and only started firing once auth
-    // resolved — a different hook count for the same component instance
-    // across its lifetime, which is undefined behavior in React and a
-    // plausible contributor to render instability under concurrent rendering.
+    // Rules of Hooks: declared unconditionally, before any early return.
     const rootScreenOptions = useMemo(() => ({ headerShown: false }), []);
 
     // ── Loading state ─────────────────────────────────────────────────────────
@@ -130,38 +142,50 @@ function RootLayoutInner() {
     }
 
     // ── Init error ────────────────────────────────────────────────────────────
+    // Reachable only on TRUE first launch without internet (authService
+    // guarantees any existing session boots successfully).
     if (initError) {
+        const isFirstLaunchOffline = initErrorCode === 'NETWORK';
         return (
             <View style={[styles.center, { backgroundColor: colors.bg }]}>
                 <Text style={[styles.errorHeading, { color: colors.text }]}>
-                    Unable to start
+                    {isFirstLaunchOffline ? 'Connect to get started' : 'Unable to start'}
                 </Text>
                 <Text style={[styles.errorDetail, { color: colors.textSecondary }]}>
-                    Check your connection and restart the app.
+                    {isFirstLaunchOffline
+                        ? 'Settravo needs internet the first time you open it, to set up your device. After that it works offline too.'
+                        : 'Something went wrong while starting the app.'}
                 </Text>
-                <Text style={[styles.errorDetail, { color: colors.textDisabled }]}>
-                    {initError}
-                </Text>
+                {!isFirstLaunchOffline && (
+                    <Text style={[styles.errorDetail, { color: colors.textDisabled }]}>
+                        {initError}
+                    </Text>
+                )}
+                <Pressable
+                    onPress={retryInitialize}
+                    style={[styles.retryBtn, { backgroundColor: colors.accent }]}
+                    accessibilityRole="button"
+                    accessibilityLabel="Retry"
+                >
+                    <Text style={[styles.retryLabel, { color: colors.textInverse }]}>
+                        Try again
+                    </Text>
+                </Pressable>
+                {isFirstLaunchOffline && (
+                    <Text style={[styles.errorDetail, { color: colors.textDisabled }]}>
+                        We'll also retry automatically when you're back online.
+                    </Text>
+                )}
             </View>
         );
     }
 
     // ── Main navigation ───────────────────────────────────────────────────────
-    // FIX (root cause of the infinite "Maximum update depth exceeded" loop):
-    // The previous implementation rendered <Redirect href="/(auth)/onboarding" />
-    // conditionally based on auth state, with a bare <Stack screenOptions={...} />
-    // (no children) relying on filesystem auto-registration. This is the LEGACY
-    // pre-SDK-53 authentication pattern. Per Expo's current docs
-    // (docs.expo.dev/router/advanced/authentication), this exact pattern —
-    // Redirect rendered conditionally inside the navigator's render path,
-    // interacting with the auto-registered screen list — is independently
-    // reported to destabilize @react-navigation's useSyncState across multiple
-    // expo-router versions, producing unkillable forceStoreRerender loops.
-    // The supported, stable replacement is Stack.Protected with declarative
-    // guards: screens are always registered (auto-discovery still applies to
-    // anything not explicitly listed), and the navigator itself decides which
-    // branch is reachable — no render-time Redirect, no list mutation.
-    const isAuthenticated = !!deviceUser && deviceUser.displayName !== null;
+    // Stack.Protected declarative guards (stable SDK 53+ auth pattern — see
+    // docs.expo.dev/router/advanced/authentication). Provisional users pass:
+    // they hold a session and are onboarded; the profile arrives when online.
+    const isAuthenticated =
+        !!deviceUser && (deviceUser.displayName !== null || deviceUser.isProvisional === true);
 
     return (
         <>
@@ -176,6 +200,8 @@ function RootLayoutInner() {
                     <Stack.Screen name="(auth)" />
                 </Stack.Protected>
             </Stack>
+            {/* Floats above all screens; renders null when there's nothing to say */}
+            <SyncStatusBanner />
         </>
     );
 }
@@ -200,5 +226,17 @@ const styles = StyleSheet.create({
         fontSize: 13,
         textAlign: 'center',
         marginTop: 4,
+    },
+    retryBtn: {
+        marginTop: 20,
+        paddingHorizontal: 32,
+        height: 44,
+        borderRadius: 10,
+        alignItems: 'center',
+        justifyContent: 'center',
+    },
+    retryLabel: {
+        fontSize: 15,
+        fontWeight: '600',
     },
 });

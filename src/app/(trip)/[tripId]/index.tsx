@@ -243,6 +243,12 @@ export default function TripDetailScreen() {
     const menuActions = useMemo((): TripMenuAction[] => {
         const actions: TripMenuAction[] = [];
         actions.push({
+            label: 'Recurring Bills',
+            iconKey: 'nav.calendar',
+            variant: 'default',
+            onPress: () => router.push(`/(trip)/${tripId}/recurring`),
+        });
+        actions.push({
             label: 'Share Expense List',
             iconKey: 'action.share',
             variant: 'default',
@@ -269,7 +275,7 @@ export default function TripDetailScreen() {
             });
         }
         return actions;
-    }, [trip, expenses, memberNameMap, isCreator, members.length]);
+    }, [trip, expenses, memberNameMap, isCreator, members.length, router, tripId]);
 
     const handleAddMember = useCallback(async (name: string) => {
         if (!tripId) return;

@@ -1,13 +1,30 @@
 /**
- * app/(trip)/[tripId]/settle.tsx — Settle Up
+ * app/(trip)/[tripId]/settle.tsx — Settle Up (Phase-2 rewrite)
  *
- * Design delta fixes applied in this revision:
- *   - "To Settle (N) | Settled (N)" tab pills matching mockup screen 8.
- *   - Settled tab shows historical settlement pairs derived from isSettled splits.
- *   - Confetti burst on all-settled state using Reanimated animated circles.
+ * What changed and why:
+ *  - Pending list now comes from the pairwise ledger (utils/settlement.ts):
+ *    every card is a real debt between two people, netted only within the
+ *    pair. No more invented A→C transfers from greedy netting.
+ *  - "Mark as Paid" calls settlePairBetweenMembers → settravo_settle_pair
+ *    RPC, which flips BOTH directions between the pair in one transaction
+ *    and returns the exact rows it changed. We apply those rows verbatim
+ *    (applyServerSplits) — the local optimistic guesswork that caused the
+ *    old inconsistencies is gone.
+ *  - Settled tab gained "Undo" (settlePair with settled=false) so a
+ *    mis-tap is recoverable — a money app must never have one-way buttons.
+ *  - Offline (Phase 3): settling now QUEUES instead of blocking. The flip is
+ *    applied optimistically using the same pairwise rule the server enforces
+ *    (both directions of unsettled debt between the two members), persisted
+ *    to the local cache, and replayed by useOfflineSync on reconnect — where
+ *    the server's returned rows overwrite the optimistic state, resolving
+ *    any concurrent-settle races in the server's favour.
+ *  - Failures are reported to Sentry with context (tripId, pair) so
+ *    recurring settle errors show up grouped in the dashboard.
  */
 
+import * as Crypto from 'expo-crypto';
 import * as Haptics from 'expo-haptics';
+import * as Sentry from '@sentry/react-native';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
@@ -35,32 +52,31 @@ import { useToast } from '../../../components/Toast';
 import { useThemeColors } from '../../../hooks/useThemeColors';
 import { useExpenses } from '../../../hooks/useExpenses';
 import { useMembers } from '../../../hooks/useMembers';
-import { markSettledBetweenMembers } from '../../../services/expenseService';
+import { cacheSplits } from '../../../lib/localCache';
+import { settlePairBetweenMembers } from '../../../services/expenseService';
+import { useConnectionStore } from '../../../stores/connectionStore';
 import { useExpenseStore } from '../../../stores/expenseStore';
-import { calculateSettlements } from '../../../utils/settlement';
+import { useTripStore } from '../../../stores/tripStore';
+import {
+    calculateSettlements,
+    calculateSettledHistory,
+    type SettledPair,
+} from '../../../utils/settlement';
 import { formatRupees } from '../../../utils/money';
 import { spacing, typography, radii, shadows } from '@/theme';
-import type { Expense, Split, Member } from '../../../types/domain';
+import type { Split } from '../../../types/domain';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type TabMode = 'pending' | 'settled';
 
 interface PendingAction {
-    fromMemberId: string;
-    toMemberId: string;
-    fromMemberName: string;
-    toMemberName: string;
-    amount: number;
-    expenseIds: string[];
-}
-
-interface SettledPair {
-    key: string;
-    fromMemberId: string;
-    toMemberId: string;
-    fromMemberName: string;
-    toMemberName: string;
+    mode: 'settle' | 'undo';
+    memberAId: string;
+    memberBId: string;
+    memberAName: string;
+    memberBName: string;
+    /** Net amount for 'settle' (display only); gross direction amount for 'undo'. */
     amountMoney: number;
 }
 
@@ -69,7 +85,7 @@ interface SettledPair {
 const CONFETTI_COLORS = ['#22C55E', '#FBBF24', '#3B82F6', '#EC4899', '#8B5CF6', '#F97316'];
 const CONFETTI_COUNT = 16;
 
-function ConfettiParticle({ index, startY }: { index: number; startY: number }) {
+function ConfettiParticle({ index }: { index: number }) {
     const angle = (index / CONFETTI_COUNT) * 2 * Math.PI;
     const distance = 80 + (index % 3) * 40;
     const tx = Math.cos(angle) * distance;
@@ -86,9 +102,8 @@ function ConfettiParticle({ index, startY }: { index: number; startY: number }) 
         scale.value = withDelay(delay, withSpring(1, { damping: 8, stiffness: 180 }));
         translateX.value = withDelay(delay, withTiming(tx, { duration: 600, easing: Easing.out(Easing.cubic) }));
         translateY.value = withDelay(delay, withTiming(ty, { duration: 600, easing: Easing.out(Easing.cubic) }));
-
-        // Fade out after burst
         opacity.value = withDelay(delay + 800, withTiming(0, { duration: 400 }));
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const style = useAnimatedStyle(() => ({
@@ -124,7 +139,7 @@ function Confetti({ show }: { show: boolean }) {
     return (
         <View style={confettiStyles.container} pointerEvents="none">
             {Array.from({ length: CONFETTI_COUNT }, (_, i) => (
-                <ConfettiParticle key={i} index={i} startY={0} />
+                <ConfettiParticle key={i} index={i} />
             ))}
         </View>
     );
@@ -141,43 +156,6 @@ const confettiStyles = StyleSheet.create({
     },
 });
 
-// ─── Settled history calculation ──────────────────────────────────────────────
-
-function calculateSettledHistory(
-    expenses: Expense[],
-    splits: Split[],
-    members: Member[],
-): SettledPair[] {
-    const memberMap = new Map(members.map((m) => [m.id, m.displayName]));
-    const expenseMap = new Map(expenses.map((e) => [e.id, e]));
-
-    // Sum settled amounts grouped by (debtor → creditor) pair
-    const pairTotals = new Map<string, number>();
-    for (const split of splits) {
-        if (!split.isSettled) continue;
-        const expense = expenseMap.get(split.expenseId);
-        if (!expense) continue;
-        // The split.memberId owes expense.paidByMember
-        if (split.memberId === expense.paidByMember) continue;
-        const key = `${split.memberId}|${expense.paidByMember}`;
-        pairTotals.set(key, (pairTotals.get(key) ?? 0) + split.shareMoney);
-    }
-
-    const result: SettledPair[] = [];
-    for (const [key, amount] of pairTotals.entries()) {
-        const [fromId, toId] = key.split('|');
-        result.push({
-            key,
-            fromMemberId: fromId,
-            toMemberId: toId,
-            fromMemberName: memberMap.get(fromId) ?? 'Unknown',
-            toMemberName: memberMap.get(toId) ?? 'Unknown',
-            amountMoney: amount,
-        });
-    }
-    return result;
-}
-
 // ─── Screen ───────────────────────────────────────────────────────────────────
 
 export default function SettleScreen() {
@@ -189,7 +167,9 @@ export default function SettleScreen() {
     const { expenses } = useExpenses(tripId ?? '');
     const members = useMembers(tripId ?? '');
     const allSplits = useExpenseStore((s) => s.splits);
-    const setSplitSettled = useExpenseStore((s) => s.setSplitSettled);
+    const applyServerSplits = useExpenseStore((s) => s.applyServerSplits);
+    const enqueueOfflineItem = useTripStore((s) => s.enqueueOfflineItem);
+    const networkOnline = useConnectionStore((s) => s.networkOnline);
 
     const [tab, setTab] = useState<TabMode>('pending');
     const [loading, setLoading] = useState(false);
@@ -216,38 +196,115 @@ export default function SettleScreen() {
         [expenses, flatSplits, members],
     );
 
-    const memberNameMap = useMemo(
-        () => new Map(members.map((m) => [m.id, m.displayName])),
-        [members],
-    );
-
     const allSettled = expenses.length > 0 && pendingSettlements.length === 0;
 
-    // Trigger confetti once when all settled
+    // Confetti fires on each transition INTO the all-settled state
+    // (re-armed if an undo brings debts back).
     const confettiTriggered = useRef(false);
     useEffect(() => {
         if (allSettled && !confettiTriggered.current) {
             confettiTriggered.current = true;
             setShowConfetti(true);
-            setTimeout(() => setShowConfetti(false), 1800);
+            const t = setTimeout(() => setShowConfetti(false), 1800);
+            return () => clearTimeout(t);
+        }
+        if (!allSettled) {
+            confettiTriggered.current = false;
         }
     }, [allSettled]);
 
-    function findRelevantExpenseIds(fromId: string, toId: string): string[] {
-        return expenses
-            .filter((e) => e.paidByMember === toId || e.paidByMember === fromId)
-            .map((e) => e.id);
-    }
+    // ── Actions ────────────────────────────────────────────────────────────────
+
+    /**
+     * The same rule settravo_settle_pair applies server-side: every split in
+     * BOTH directions between the pair whose is_settled !== target state.
+     * Used for the optimistic offline flip so local math matches the server's.
+     */
+    const splitsBetweenPair = useCallback(
+        (aId: string, bId: string, targetSettled: boolean): Split[] => {
+            const payerByExpense = new Map(expenses.map((e) => [e.id, e.paidByMember]));
+            return flatSplits.filter((sp) => {
+                if (sp.isSettled === targetSettled) return false;
+                const payer = payerByExpense.get(sp.expenseId);
+                if (!payer || sp.memberId === payer) return false;
+                return (
+                    (sp.memberId === aId && payer === bId) ||
+                    (sp.memberId === bId && payer === aId)
+                );
+            });
+        },
+        [expenses, flatSplits],
+    );
 
     const confirmAction = useCallback(async () => {
         if (!pendingAction || !tripId) return;
         setLoading(true);
+        const settled = pendingAction.mode === 'settle';
+
         try {
-            await markSettledBetweenMembers(tripId, pendingAction.fromMemberId, pendingAction.toMemberId);
-            setSplitSettled(pendingAction.expenseIds, pendingAction.fromMemberId, true);
-            await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
-            showToast({ message: 'Marked as paid', variant: 'success' });
+            if (networkOnline) {
+                // ── Online: server is the source of truth ─────────────────
+                const changedRows = await settlePairBetweenMembers(
+                    tripId,
+                    pendingAction.memberAId,
+                    pendingAction.memberBId,
+                    settled,
+                );
+                applyServerSplits(changedRows);
+                cacheSplits(tripId, changedRows);
+
+                await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                showToast({
+                    message: settled
+                        ? changedRows.length > 0
+                            ? 'Marked as settled'
+                            : 'Already settled — nothing to update'
+                        : 'Settlement undone',
+                    variant: 'success',
+                });
+            } else {
+                // ── Offline: optimistic flip + queue for replay ───────────
+                const affected = splitsBetweenPair(
+                    pendingAction.memberAId,
+                    pendingAction.memberBId,
+                    settled,
+                );
+                const flipped = affected.map((sp) => ({ ...sp, isSettled: settled }));
+                applyServerSplits(flipped);
+                cacheSplits(tripId, flipped);
+
+                await enqueueOfflineItem({
+                    type: 'SETTLE_PAIR',
+                    localId: Crypto.randomUUID(),
+                    retryCount: 0,
+                    lastFailedAt: null,
+                    payload: {
+                        tripId,
+                        memberAId: pendingAction.memberAId,
+                        memberBId: pendingAction.memberBId,
+                        settled,
+                    },
+                });
+
+                await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Success);
+                showToast({
+                    message: settled
+                        ? "Marked as settled — will sync when you're online"
+                        : "Undone — will sync when you're online",
+                    variant: 'success',
+                });
+            }
         } catch (err) {
+            Sentry.captureException(err, {
+                tags: { feature: 'settle' },
+                extra: {
+                    tripId,
+                    memberA: pendingAction.memberAId,
+                    memberB: pendingAction.memberBId,
+                    mode: pendingAction.mode,
+                    online: networkOnline,
+                },
+            });
             await Haptics.notificationAsync(Haptics.NotificationFeedbackType.Error);
             showToast({
                 message: err instanceof Error ? err.message : 'Failed to update settlement',
@@ -257,17 +314,45 @@ export default function SettleScreen() {
             setLoading(false);
             setPendingAction(null);
         }
-    }, [pendingAction, tripId, setSplitSettled, showToast]);
+    }, [
+        pendingAction,
+        tripId,
+        networkOnline,
+        applyServerSplits,
+        enqueueOfflineItem,
+        splitsBetweenPair,
+        showToast,
+    ]);
 
     const handleMarkPaid = useCallback(
-        (fromMemberId: string, toMemberId: string, amount: number) => {
-            const fromName = memberNameMap.get(fromMemberId) ?? 'Unknown';
-            const toName = memberNameMap.get(toMemberId) ?? 'Unknown';
-            const expenseIds = findRelevantExpenseIds(fromMemberId, toMemberId);
-            setPendingAction({ fromMemberId, toMemberId, fromMemberName: fromName, toMemberName: toName, amount, expenseIds });
+        (fromId: string, toId: string, fromName: string, toName: string, amount: number) => {
+            setPendingAction({
+                mode: 'settle',
+                memberAId: fromId,
+                memberBId: toId,
+                memberAName: fromName,
+                memberBName: toName,
+                amountMoney: amount,
+            });
         },
-        [memberNameMap, expenses],
+        [],
     );
+
+    const handleUndo = useCallback(
+        (pair: SettledPair) => {
+            setPendingAction({
+                mode: 'undo',
+                memberAId: pair.fromMemberId,
+                memberBId: pair.toMemberId,
+                memberAName: pair.fromMemberName,
+                memberBName: pair.toMemberName,
+                amountMoney: pair.amountMoney,
+            });
+        },
+        [],
+    );
+
+    // ── Render ─────────────────────────────────────────────────────────────────
 
     return (
         <SafeAreaView style={[styles.root, { backgroundColor: colors.bg }]} edges={['top', 'left', 'right']}>
@@ -373,7 +458,11 @@ export default function SettleScreen() {
                                             { backgroundColor: colors.accent },
                                             pressed && styles.btnPressed,
                                         ]}
-                                        onPress={() => handleMarkPaid(s.fromMemberId, s.toMemberId, s.amountMoney)}
+                                        onPress={() => handleMarkPaid(
+                                            s.fromMemberId, s.toMemberId,
+                                            s.fromMemberName, s.toMemberName,
+                                            s.amountMoney,
+                                        )}
                                         accessibilityRole="button"
                                         accessibilityLabel={`Mark ${s.fromMemberName} payment to ${s.toMemberName} as paid`}
                                     >
@@ -420,6 +509,17 @@ export default function SettleScreen() {
                                                 {formatRupees(pair.amountMoney)}
                                             </Text>
                                         </View>
+                                        <Pressable
+                                            onPress={() => handleUndo(pair)}
+                                            hitSlop={8}
+                                            style={styles.undoBtn}
+                                            accessibilityRole="button"
+                                            accessibilityLabel={`Undo settlement between ${pair.fromMemberName} and ${pair.toMemberName}`}
+                                        >
+                                            <Text style={[typography.caption, { color: colors.accent, fontWeight: '600' }]}>
+                                                Undo
+                                            </Text>
+                                        </Pressable>
                                     </View>
                                 </View>
                             ))}
@@ -434,9 +534,13 @@ export default function SettleScreen() {
             {pendingAction && (
                 <ConfirmModal
                     visible
-                    title="Confirm Payment"
-                    message={`Mark ${pendingAction.fromMemberName}'s payment of ${formatRupees(pendingAction.amount)} to ${pendingAction.toMemberName} as paid?`}
-                    confirmLabel="Mark as Paid"
+                    title={pendingAction.mode === 'settle' ? 'Confirm Payment' : 'Undo Settlement'}
+                    message={
+                        pendingAction.mode === 'settle'
+                            ? `Settle everything between ${pendingAction.memberAName} and ${pendingAction.memberBName}? Net amount: ${formatRupees(pendingAction.amountMoney)}.`
+                            : `Move all settled amounts between ${pendingAction.memberAName} and ${pendingAction.memberBName} back to "To Settle"?`
+                    }
+                    confirmLabel={pendingAction.mode === 'settle' ? 'Mark as Paid' : 'Undo'}
                     confirmVariant="primary"
                     onConfirm={confirmAction}
                     onCancel={() => setPendingAction(null)}
@@ -500,4 +604,5 @@ const styles = StyleSheet.create({
     settledRow: { flexDirection: 'row', alignItems: 'center', gap: spacing.md },
     settledInfo: { flex: 1 },
     settledAmount: { flexDirection: 'row', alignItems: 'center', gap: spacing.xs },
+    undoBtn: { paddingLeft: spacing.sm, paddingVertical: spacing.xs },
 });

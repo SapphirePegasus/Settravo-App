@@ -23,6 +23,7 @@ export default function TripIdLayout() {
     const screenOptions = useMemo(
         () => ({
             headerStyle,
+            headerShown: false,
             headerTintColor: colors.text,
             headerShadowVisible: false,
             contentStyle: { backgroundColor: colors.bg },
@@ -50,6 +51,10 @@ export default function TripIdLayout() {
         () => ({ title: 'Activity', headerStyle, headerTintColor: colors.text }),
         [headerStyle, colors.text],
     );
+    const recurringOptions = useMemo(
+        () => ({ title: 'Recurring Bills', headerShown: false }),
+        [],
+    );
 
     return (
         <Stack screenOptions={screenOptions}>
@@ -58,6 +63,7 @@ export default function TripIdLayout() {
             <Stack.Screen name="settle" options={settleOptions} />
             <Stack.Screen name="qr" options={qrOptions} />
             <Stack.Screen name="activity" options={activityOptions} />
+            <Stack.Screen name="recurring" options={recurringOptions} />
         </Stack>
     );
 }

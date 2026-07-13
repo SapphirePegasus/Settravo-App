@@ -59,6 +59,7 @@ interface MenuItem {
 const MENU_ITEMS: MenuItem[] = [
     { label: 'Feedback', iconKey: 'action.edit', route: '/(info)/feedback' },
     { label: 'Help', iconKey: 'status.info', route: '/(info)/help' },
+    { label: 'Privacy', iconKey: 'action.copy', route: '/(info)/privacy' },
     { label: 'About', iconKey: 'action.copy', route: '/(info)/about' },
 ];
 

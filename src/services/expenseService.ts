@@ -9,8 +9,14 @@
  *  - Split totals are validated to exactly equal the expense amount.
  *  - Returns domain types only. Raw DB rows never leave this file.
  *  - Add and delete go direct to Supabase (RLS is the gate).
- *    No Edge Function needed here — mutations are single-table, no
- *    rate-limit attack surface beyond what RLS already covers.
+ *
+ * Phase-2 change — settle contract:
+ *  - markSettledBetweenMembers / unmarkSettledBetweenMembers (one-directional,
+ *    returned only a count) are REPLACED by settlePairBetweenMembers, backed
+ *    by the settravo_settle_pair RPC. It flips BOTH directions of unsettled
+ *    debt between two members inside one DB transaction and RETURNS the exact
+ *    split rows it mutated. The caller mirrors those rows into the store —
+ *    local state can no longer diverge from the server.
  *
  * Offline flow (called from the offline sync hook):
  *  - addExpenseWithSplits() is the online path.
@@ -21,7 +27,7 @@
 import { supabase } from '../lib/supabase';
 import type { Expense, Split } from '../types/domain';
 import type { Database } from '../types/supabase';
-import { AppError, classifySupabaseError } from '../errors/AppError';
+import { AppError } from '../errors/AppError';
 import {
     AddExpenseSchema,
     AddSplitsSchema,
@@ -177,7 +183,8 @@ export async function addExpenseWithSplits(
 
 /**
  * Edit an expense's title, category, or amount.
- * RLS "Payer can edit their expense" enforces ownership.
+ * RLS enforces that only the payer (or any member, when the payer is a
+ * guest) can edit.
  *
  * If amount changes, all splits must be re-submitted (pass newSplits).
  * If only title/category changes, newSplits can be omitted.
@@ -229,7 +236,7 @@ export async function editExpense(
 
 /**
  * Delete an expense (and its splits, via CASCADE in the DB schema).
- * RLS "Payer can delete their expense" enforces ownership.
+ * RLS enforces that only the payer (or any member, for guest-paid) can delete.
  */
 export async function deleteExpense(expenseId: string): Promise<void> {
     const { error } = await supabase
@@ -240,49 +247,46 @@ export async function deleteExpense(expenseId: string): Promise<void> {
     if (error) throw new Error(`[expenseService] deleteExpense: ${error.message}`);
 }
 
+// ─── Settle (Phase-2 contract) ────────────────────────────────────────────────
+
 /**
- * Mark or unmark all splits settled between two members using a single
- * atomic Postgres RPC — eliminates the TOCTOU race condition that existed
- * with two sequential round trips (SELECT expenses → UPDATE splits).
+ * Settle (or un-settle) ALL unsettled debt between two members of a trip.
  *
- * The RPC runs inside the DB transaction boundary so no expense added
- * between the two old queries can be silently missed.
+ * Backed by the settravo_settle_pair RPC (SECURITY DEFINER, single txn):
+ *  - Verifies the caller is a member of the trip.
+ *  - Flips is_settled on every qualifying split in BOTH directions
+ *    (memberA→memberB and memberB→memberA) — matching what the pairwise
+ *    settlement card on screen actually represents.
+ *  - Returns the exact rows it mutated.
+ *
+ * The caller MUST apply the returned splits to the expense store
+ * (applyServerSplits) instead of guessing which rows changed. This is the
+ * fix for the "settle button is inconsistent" class of bugs.
+ *
+ * @returns the mutated split rows (may be empty if nothing qualified).
  */
-async function rpcMarkSettled(
+export async function settlePairBetweenMembers(
     tripId: string,
-    debtorMemberId: string,
-    creditorMemberId: string,
+    memberAId: string,
+    memberBId: string,
     settled: boolean,
-): Promise<number> {
-    const { data, error } = await supabase.rpc('mark_settled_between', {
+): Promise<Split[]> {
+    const { data, error } = await supabase.rpc('settravo_settle_pair', {
         p_trip_id: tripId,
-        p_debtor_id: debtorMemberId,
-        p_creditor_id: creditorMemberId,
+        p_member_a: memberAId,
+        p_member_b: memberBId,
         p_settled: settled,
     });
 
     if (error) {
+        // 42501 is raised by the RPC when the caller isn't a trip member.
+        const code = (error as { code?: string }).code === '42501' ? 'FORBIDDEN' : 'SERVER';
         throw new AppError(
-            'SERVER',
-            `[expenseService] mark_settled_between RPC failed: ${error.message}`,
+            code,
+            `[expenseService] settravo_settle_pair failed: ${error.message}`,
             error,
         );
     }
-    return (data as number) ?? 0;
-}
 
-export async function markSettledBetweenMembers(
-    tripId: string,
-    debtorMemberId: string,
-    creditorMemberId: string,
-): Promise<number> {
-    return rpcMarkSettled(tripId, debtorMemberId, creditorMemberId, true);
-}
-
-export async function unmarkSettledBetweenMembers(
-    tripId: string,
-    debtorMemberId: string,
-    creditorMemberId: string,
-): Promise<number> {
-    return rpcMarkSettled(tripId, debtorMemberId, creditorMemberId, false);
+    return ((data ?? []) as SplitRow[]).map(mapSplit);
 }

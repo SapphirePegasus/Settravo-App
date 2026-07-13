@@ -1,75 +1,85 @@
 /**
  * useExpenses.ts
  *
- * Hook that manages the full expense + realtime lifecycle for a trip.
+ * Full expense + realtime lifecycle for a trip — Phase-3 cache-first version.
  *
- *  1. Fetches all expenses and splits from Supabase on mount.
- *  2. Starts the Realtime subscription for the trip channel.
- *  3. Tears down the subscription on unmount (critical — prevents leaks).
- *  4. Exposes expenses, splits, loading state, and a refresh function.
+ *  1. Hydrate expenses + splits instantly from the SQLite cache.
+ *  2. Fetch fresh from Supabase; on success write the snapshot back through.
+ *  3. Start the Realtime subscription (reference-counted per trip).
+ *  4. On fetch failure (offline), the cached snapshot remains on screen.
  *
- * Usage: call at the top of any trip-scoped screen. It is safe for multiple
- * sibling screens (index, activity, settle) to call this concurrently for
- * the same tripId — realtimeService.ts reference-counts a single shared
- * channel per tripId, so duplicate calls reuse it instead of conflicting.
- * 
- * FIX (v2): The previous implementation used inline `?? []` in the Zustand
- * selector, which creates a new array reference on every render when the key
- * is absent. React 18's concurrent mode calls getSnapshot multiple times and
- * detects the unstable reference, throwing:
- *   "The result of getSnapshot should be cached to avoid an infinite loop"
- * Solution: use a module-level stable empty constant as the fallback, so the
- * selector always returns the same reference when no expenses exist yet.
+ * getSnapshot stability (kept from v2): module-level EMPTY_EXPENSES constant
+ * so the Zustand selector returns a stable reference — React 18 requirement.
  */
 
 import { useCallback, useEffect, useRef } from 'react';
+import { cacheTripData, readCachedExpenses, readCachedSplits } from '../lib/localCache';
 import { fetchAllSplitsForTrip, fetchExpenses } from '../services/expenseService';
+import { materializeRecurring } from '../services/templateService';
 import { subscribeToTrip, type RealtimeSubscription } from '../services/realtimeService';
+import { useConnectionStore } from '../stores/connectionStore';
 import { useExpenseStore } from '../stores/expenseStore';
 import type { Expense, Split } from '../types/domain';
 
-// ── Stable empty references ───────────────────────────────────────────────────
-// Module-level constants are allocated once. Returning them from a Zustand
-// selector always yields the same reference, satisfying React's getSnapshot
-// contract and preventing the infinite-loop crash.
 const EMPTY_EXPENSES: Expense[] = [];
+
+function indexSplitsByExpense(splits: Split[]): Record<string, Split[]> {
+    const byExpense: Record<string, Split[]> = {};
+    for (const split of splits) {
+        (byExpense[split.expenseId] ??= []).push(split);
+    }
+    return byExpense;
+}
 
 export function useExpenses(tripId: string) {
     const setExpenses = useExpenseStore((s) => s.setExpenses);
     const setSplits = useExpenseStore((s) => s.setSplits);
     const setLoading = useExpenseStore((s) => s.setLoading);
 
-    // Stable selector: never creates a new [] inline.
     const expenses = useExpenseStore(
         (s) => s.expenses[tripId] ?? EMPTY_EXPENSES,
     );
     const isLoading = useExpenseStore((s) => s.isLoading);
 
-    // In useExpenses, change the subscription ref type and expose reconnect:
     const subscriptionRef = useRef<RealtimeSubscription | null>(null);
+    const hydratedForTripId = useRef<string | null>(null);
 
     const loadData = useCallback(async () => {
         if (!tripId) return;
+
+        // Offline: don't spin a loader for a request that cannot succeed.
+        // The cache hydration below (or a previous fetch) is the data.
+        if (!useConnectionStore.getState().networkOnline) {
+            setLoading(false);
+            return;
+        }
+
         setLoading(true);
         try {
+            // Phase 5: materialize any due recurring bills FIRST, so the
+            // fetch below already includes them. Idempotent server-side —
+            // safe on every open and every pull-to-refresh. A failure here
+            // must never block loading real data.
+            try {
+                await materializeRecurring(tripId);
+            } catch (err) {
+                console.warn('[useExpenses] recurring materialization failed (non-fatal):', err);
+            }
+
             const [fetchedExpenses, fetchedSplits] = await Promise.all([
                 fetchExpenses(tripId),
                 fetchAllSplitsForTrip(tripId),
             ]);
 
             setExpenses(tripId, fetchedExpenses);
-
-            // Index splits by expenseId
-            const splitsByExpense: Record<string, Split[]> = {};
-            for (const split of fetchedSplits) {
-                if (!splitsByExpense[split.expenseId]) splitsByExpense[split.expenseId] = [];
-                splitsByExpense[split.expenseId].push(split);
-            }
-            for (const [expenseId, splits] of Object.entries(splitsByExpense)) {
+            for (const [expenseId, splits] of Object.entries(indexSplitsByExpense(fetchedSplits))) {
                 setSplits(expenseId, splits);
             }
+
+            // Write-through: this trip is now fully readable offline.
+            cacheTripData(tripId, fetchedExpenses, fetchedSplits);
         } catch (err) {
-            console.error('[useExpenses] fetch failed:', err);
+            console.warn('[useExpenses] fetch failed (cache remains):', err);
         } finally {
             setLoading(false);
         }
@@ -78,17 +88,34 @@ export function useExpenses(tripId: string) {
     useEffect(() => {
         if (!tripId) return;
 
-        // Initial data load
+        // 1. Instant, synchronous cache hydration — once per tripId per mount,
+        //    and only when the store has nothing for this trip yet.
+        if (hydratedForTripId.current !== tripId) {
+            hydratedForTripId.current = tripId;
+            const inStore = useExpenseStore.getState().expenses[tripId];
+            if (!inStore || inStore.length === 0) {
+                const cachedExpenses = readCachedExpenses(tripId);
+                if (cachedExpenses.length > 0) {
+                    setExpenses(tripId, cachedExpenses);
+                    const cachedSplits = readCachedSplits(tripId);
+                    for (const [expenseId, splits] of Object.entries(indexSplitsByExpense(cachedSplits))) {
+                        setSplits(expenseId, splits);
+                    }
+                }
+            }
+        }
+
+        // 2. Network refresh
         loadData();
 
-        // Start Realtime — one subscription per trip, cleaned up on unmount
+        // 3. Realtime — one subscription per trip, cleaned up on unmount
         subscriptionRef.current = subscribeToTrip(tripId);
 
         return () => {
             subscriptionRef.current?.unsubscribe();
             subscriptionRef.current = null;
         };
-    }, [tripId, loadData]);
+    }, [tripId, loadData, setExpenses, setSplits]);
 
     return {
         expenses,

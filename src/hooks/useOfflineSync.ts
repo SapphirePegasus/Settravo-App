@@ -1,86 +1,109 @@
 /**
  * useOfflineSync.ts
  *
- * Watches network connectivity and replays the offline expense queue
- * when the device comes back online.
- *
+ * Watches network connectivity and replays the offline mutation queue.
  * Mount ONCE in the root _layout.tsx — never in individual screens.
- * The queue is global (tripStore) and a per-screen instance creates
- * a race condition where multiple instances replay the same items concurrently.
  *
- * Retry policy:
- *  - Each item tracks retryCount (starts at 0).
- *  - On failure: retryCount is incremented and the item stays in the queue.
- *  - After OFFLINE_MAX_RETRIES failures: item is moved to dead-letter queue
- *    and removed from the live queue, unblocking subsequent items.
+ * Phase-3 upgrades:
+ *  - SETTLE_PAIR replay: settling offline is queued and replayed exactly like
+ *    expenses. The server's returned rows are mirrored via applyServerSplits,
+ *    correcting any optimistic drift (e.g. someone else settled first).
+ *  - Retry heartbeat: previously, failed items only got another attempt when
+ *    the network flipped or the queue changed — an item could sit failed for
+ *    hours on stable Wi-Fi. A 30s heartbeat now re-attempts pending items
+ *    while online, with per-item spacing that doubles per failure
+ *    (30s → 60s → 120s → 240s, capped) to avoid hammering a struggling server.
+ *  - isSyncing flag on connectionStore drives the SyncStatusBanner.
  *
- * Splits:
- *  - ADD_EXPENSE items carry a `splits` array (fixed from MVP placeholder).
- *  - Replaying with splits: [] caused settlement data loss — this is now fixed.
+ * Retry policy (unchanged): retryCount per item; after OFFLINE_MAX_RETRIES
+ * the item moves to the dead-letter queue — which is now VISIBLE in the UI
+ * (SyncStatusBanner) with Retry / Discard actions, instead of silently
+ * swallowing the user's data.
  */
 
-import { useEffect, useRef } from 'react';
+import * as Sentry from '@sentry/react-native';
+import { useCallback, useEffect, useRef } from 'react';
+import { cacheExpenseWithSplits, cacheSplits, removeCachedExpense } from '../lib/localCache';
 import {
     addExpenseWithSplits,
     deleteExpense,
     editExpense,
+    settlePairBetweenMembers,
 } from '../services/expenseService';
 import { useConnectionStore } from '../stores/connectionStore';
 import { useExpenseStore } from '../stores/expenseStore';
 import { useTripStore } from '../stores/tripStore';
-import type { DeadLetterItem, Expense, OfflineQueueItem } from '../types/domain';
+import type { DeadLetterItem, OfflineQueueItem } from '../types/domain';
 import { OFFLINE_MAX_RETRIES } from '../types/domain';
+
+const HEARTBEAT_MS = 30_000;
+const BASE_RETRY_SPACING_MS = 30_000;
+const MAX_RETRY_SPACING_MS = 240_000;
+
+/** Is this item due for another attempt, respecting exponential spacing? */
+function isDue(item: OfflineQueueItem, now: number): boolean {
+    if (!item.lastFailedAt || item.retryCount === 0) return true;
+    const spacing = Math.min(
+        BASE_RETRY_SPACING_MS * 2 ** Math.max(0, item.retryCount - 1),
+        MAX_RETRY_SPACING_MS,
+    );
+    return now - Date.parse(item.lastFailedAt) >= spacing;
+}
 
 export function useOfflineSync(): void {
     const networkOnline = useConnectionStore((s) => s.networkOnline);
     const offlineQueue = useTripStore((s) => s.offlineQueue);
-    const dequeueOfflineItem = useTripStore((s) => s.dequeueOfflineItem);
-    const updateOfflineItemRetry = useTripStore((s) => s.updateOfflineItemRetry);
-    const addDeadLetterItem = useTripStore((s) => s.addDeadLetterItem);
-    const confirmExpense = useExpenseStore((s) => s.confirmExpense);
-    const setSplits = useExpenseStore((s) => s.setSplits);
-    const removeExpense = useExpenseStore((s) => s.removeExpense);
 
     // Ref prevents concurrent replay runs within the same mounted instance
     const isReplaying = useRef(false);
 
-    useEffect(() => {
-        if (!networkOnline || offlineQueue.length === 0 || isReplaying.current) {
+    const runReplay = useCallback(async () => {
+        const queue = useTripStore.getState().offlineQueue;
+        if (
+            !useConnectionStore.getState().networkOnline ||
+            queue.length === 0 ||
+            isReplaying.current
+        ) {
             return;
         }
 
-        async function replay(): Promise<void> {
-            isReplaying.current = true;
+        isReplaying.current = true;
+        useConnectionStore.getState().setSyncing(true);
 
+        try {
+            const now = Date.now();
             // Snapshot at replay start — items added during replay are picked
-            // up on the next online event, not mixed into this run.
-            const itemsToReplay = [...offlineQueue];
+            // up by the next heartbeat / queue-change effect, not mixed in.
+            const itemsToReplay = queue.filter((item) => isDue(item, now));
 
             for (const item of itemsToReplay) {
+                const store = useTripStore.getState();
                 try {
-                    await replayItem(item, confirmExpense, setSplits, removeExpense);
-                    await dequeueOfflineItem(item.localId);
+                    await replayItem(item);
+                    await store.dequeueOfflineItem(item.localId);
                 } catch (err) {
                     const newCount = (item.retryCount ?? 0) + 1;
                     const failedAt = new Date().toISOString();
 
                     if (newCount >= OFFLINE_MAX_RETRIES) {
-                        // Permanently failed — move to dead-letter so the queue
-                        // is not blocked forever by this item.
                         const deadItem: DeadLetterItem = {
                             ...item,
                             retryCount: newCount,
                             lastFailedAt: failedAt,
                             failureReason: err instanceof Error ? err.message : String(err),
                         };
-                        await dequeueOfflineItem(item.localId);
-                        await addDeadLetterItem(deadItem);
+                        await store.dequeueOfflineItem(item.localId);
+                        await store.addDeadLetterItem(deadItem);
+                        Sentry.captureException(err, {
+                            tags: { feature: 'offline-sync', outcome: 'dead-letter' },
+                            extra: { itemType: item.type, localId: item.localId, attempts: newCount },
+                        });
                         console.error(
                             `[useOfflineSync] Item ${item.localId} moved to dead-letter after ${newCount} attempts:`,
                             err,
                         );
                     } else {
-                        await updateOfflineItemRetry(item.localId, newCount, failedAt);
+                        await store.updateOfflineItemRetry(item.localId, newCount, failedAt);
                         console.warn(
                             `[useOfflineSync] Replay failed for ${item.localId} (attempt ${newCount}/${OFFLINE_MAX_RETRIES}):`,
                             err,
@@ -88,31 +111,38 @@ export function useOfflineSync(): void {
                     }
                 }
             }
-
+        } finally {
             isReplaying.current = false;
+            useConnectionStore.getState().setSyncing(false);
         }
+    }, []);
 
-        replay();
-    }, [
-        networkOnline,
-        offlineQueue,
-        dequeueOfflineItem,
-        updateOfflineItemRetry,
-        addDeadLetterItem,
-        confirmExpense,
-        setSplits,
-        removeExpense,
-    ]);
+    // Trigger on connectivity/queue changes (immediate reaction to reconnect
+    // and to freshly enqueued items).
+    useEffect(() => {
+        if (!networkOnline || offlineQueue.length === 0) return;
+        void runReplay();
+    }, [networkOnline, offlineQueue, runReplay]);
+
+    // Heartbeat: retries failed-but-not-dead items on stable connections.
+    useEffect(() => {
+        const interval = setInterval(() => {
+            if (
+                useConnectionStore.getState().networkOnline &&
+                useTripStore.getState().offlineQueue.length > 0
+            ) {
+                void runReplay();
+            }
+        }, HEARTBEAT_MS);
+        return () => clearInterval(interval);
+    }, [runReplay]);
 }
 
 // ─── Replay dispatcher ────────────────────────────────────────────────────────
 
-async function replayItem(
-    item: OfflineQueueItem,
-    confirmExpense: (tripId: string, localId: string, confirmed: Expense) => void,
-    setSplits: (expenseId: string, splits: import('../types/domain').Split[]) => void,
-    removeExpense: (tripId: string, expenseId: string) => void,
-): Promise<void> {
+async function replayItem(item: OfflineQueueItem): Promise<void> {
+    const expenseStore = useExpenseStore.getState();
+
     if (item.type === 'ADD_EXPENSE') {
         const { payload, localId, splits } = item;
         const { expense, splits: confirmedSplits } = await addExpenseWithSplits(
@@ -127,9 +157,11 @@ async function replayItem(
             { splits },
         );
         // Swap optimistic local row for the confirmed server row
-        confirmExpense(payload.tripId, localId, expense);
-        // Hydrate the confirmed splits into the store so settlement math is correct
-        setSplits(expense.id, confirmedSplits);
+        expenseStore.confirmExpense(payload.tripId, localId, expense);
+        expenseStore.setSplits(expense.id, confirmedSplits);
+        // Local cache: drop the optimistic row, store the confirmed one.
+        removeCachedExpense(localId);
+        cacheExpenseWithSplits(payload.tripId, expense, confirmedSplits);
         return;
     }
 
@@ -140,7 +172,18 @@ async function replayItem(
 
     if (item.type === 'DELETE_EXPENSE') {
         await deleteExpense(item.payload.expenseId);
-        removeExpense(item.payload.tripId, item.payload.expenseId);
+        expenseStore.removeExpense(item.payload.tripId, item.payload.expenseId);
+        removeCachedExpense(item.payload.expenseId);
+        return;
+    }
+
+    if (item.type === 'SETTLE_PAIR') {
+        const { tripId, memberAId, memberBId, settled } = item.payload;
+        const changedRows = await settlePairBetweenMembers(tripId, memberAId, memberBId, settled);
+        // Server truth overrides the optimistic flip made at enqueue time —
+        // including the concurrent-settle case where changedRows is empty.
+        expenseStore.applyServerSplits(changedRows);
+        cacheSplits(tripId, changedRows);
         return;
     }
 

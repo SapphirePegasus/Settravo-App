@@ -3,15 +3,22 @@
  *
  * Handles the complete anonymous identity lifecycle.
  *
- * Offline-first boot strategy:
- *  - User profile (DeviceUser) is cached in SecureStore as JSON.
- *  - On boot, if a Supabase session exists in local storage AND a cached
- *    profile exists, we return the cached profile immediately — no network
- *    call required. This makes the app fully functional offline on relaunch.
- *  - A background refresh from Supabase runs after boot to sync the profile.
- *  - Only on true first launch (no session, no cache) is a network call required.
+ * ── Phase-3 offline boot contract ───────────────────────────────────────────
+ * The previous flow had two paths that killed offline boot:
+ *   1. session + SecureStore cache MISS → fell through to fetchUserRow()
+ *      (network) → threw offline → "Unable to start".
+ *   2. no session + offline → signInAnonymously() threw a raw error with no
+ *      way for the UI to distinguish "needs internet once" from a real bug.
  *
- * Security model:
+ * New guarantees:
+ *   - If ANY session exists, initializeDeviceIdentity() NEVER throws.
+ *     Fallback chain: SecureStore cache → network fetch → minimal profile
+ *     derived from the session itself (background-refreshed later).
+ *   - True first launch with no network throws AppError('NETWORK') so the
+ *     root layout can show a friendly "connect once to get started" screen
+ *     with a Retry button instead of a dead end.
+ *
+ * Security model (unchanged):
  *  - The Supabase JWT is the auth token. All RLS policies check auth.uid().
  *  - Device UUID in SecureStore is a secondary binding.
  *  - We never poll supabase.auth.getUser() — that interferes with the SDK's
@@ -19,6 +26,8 @@
  */
 
 import * as SecureStore from 'expo-secure-store';
+import { AppError } from '../errors/AppError';
+import { clearLocalCache } from '../lib/localCache';
 import { supabase } from '../lib/supabase';
 import type { DeviceUser } from '../types/domain';
 import type { Database } from '../types/supabase';
@@ -76,35 +85,93 @@ async function readCachedUser(): Promise<DeviceUser | null> {
     }
 }
 
+/** Heuristic: does this error look like a connectivity failure? */
+function isNetworkError(err: unknown): boolean {
+    const msg = err instanceof Error ? err.message.toLowerCase() : String(err).toLowerCase();
+    return (
+        msg.includes('network request failed') ||
+        msg.includes('failed to fetch') ||
+        msg.includes('fetch failed') ||
+        msg.includes('network error') ||
+        msg.includes('timeout') ||
+        msg.includes('abort')
+    );
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
  * Full initialization sequence. Returns DeviceUser on success.
  *
- * Offline-first: if a session + cached profile both exist, returns the
- * cached profile immediately without any network call. Background-refreshes
- * the profile from the DB afterwards.
- *
- * Network-required: only on true first launch (no persisted session).
+ * NEVER throws when a session exists (offline-safe relaunch).
+ * Throws AppError('NETWORK') only on true first launch without internet.
  */
 export async function initializeDeviceIdentity(): Promise<DeviceUser> {
-    // Step 1: Check for an existing local session (reads from SDK's AsyncStorage — no network)
+    // Step 1: Check for an existing local session (reads from SDK storage — no network)
     const { data: sessionData } = await supabase.auth.getSession();
     let session = sessionData.session;
 
     if (session) {
-        // Returning user — try the cache first for offline-safe boot
+        // Returning user — cache first, for offline-safe boot.
         const cached = await readCachedUser();
         if (cached && cached.id === session.user.id) {
-            // Serve cached immediately. Background-refresh profile from DB.
             refreshProfileInBackground(session.user.id);
             return cached;
         }
-        // Cache miss or stale — fall through to network fetch
+
+        // Cache miss or stale: TRY the network, but never let it kill boot —
+        // the session proves who this device is.
+        try {
+            const row = await fetchUserRow(session.user.id);
+            if (row) {
+                const user = mapRowToDomain(row);
+                await writeCachedUser(user);
+                if (!(await SecureStore.getItemAsync(SECURE_DEVICE_UUID_KEY))) {
+                    await SecureStore.setItemAsync(SECURE_DEVICE_UUID_KEY, row.device_uuid);
+                }
+                void supabase
+                    .from('TravelAppUsers')
+                    .update({ last_seen: new Date().toISOString() })
+                    .eq('id', session.user.id);
+                return user;
+            }
+            // Session exists but no user row (row was deleted server-side):
+            // fall through to the create path below — requires network, but
+            // we ARE online (fetch just succeeded).
+        } catch (err) {
+            if (isNetworkError(err)) {
+                // OFFLINE with a valid session and no cache: serve a minimal
+                // profile derived from the session. Real data loads later.
+                const storedUuid = await SecureStore.getItemAsync(SECURE_DEVICE_UUID_KEY);
+                const nowIso = new Date().toISOString();
+                const minimal: DeviceUser = {
+                    id: session.user.id,
+                    deviceUuid: storedUuid ?? session.user.id,
+                    displayName: null,
+                    avatarColor: null,
+                    createdAt: session.user.created_at ?? nowIso,
+                    lastSeen: nowIso,
+                    // Signals the auth gate: this user IS onboarded (they have
+                    // a session) — we just can't read their profile offline.
+                    // Never written to the SecureStore cache.
+                    isProvisional: true,
+                };
+                refreshProfileWhenPossible(session.user.id);
+                return minimal;
+            }
+            throw err; // Non-network failure with a live session — surface it.
+        }
     } else {
-        // First launch or session was cleared — network required
+        // First launch or session was cleared — network required, once.
         const { data, error } = await supabase.auth.signInAnonymously();
         if (error || !data.session) {
+            if (error && isNetworkError(error)) {
+                throw new AppError(
+                    'NETWORK',
+                    'Settravo needs an internet connection the first time you open it.',
+                    error,
+                );
+            }
             throw new Error(
                 `[authService] signInAnonymously failed: ${error?.message ?? 'no session returned'}`,
             );
@@ -115,7 +182,7 @@ export async function initializeDeviceIdentity(): Promise<DeviceUser> {
     const authUid = session.user.id;
 
     // Step 2: Ensure SecureStore UUID exists
-    let storedUuid = await SecureStore.getItemAsync(SECURE_DEVICE_UUID_KEY);
+    const storedUuid = await SecureStore.getItemAsync(SECURE_DEVICE_UUID_KEY);
 
     // Step 3: Fetch or create TravelAppUsers row
     const existingUser = await fetchUserRow(authUid);
@@ -194,6 +261,8 @@ export async function signOutAndReset(): Promise<void> {
     await supabase.auth.signOut();
     await SecureStore.deleteItemAsync(SECURE_DEVICE_UUID_KEY);
     await SecureStore.deleteItemAsync(SECURE_USER_CACHE_KEY);
+    // Money data must not survive a sign-out on a shared device.
+    clearLocalCache();
 }
 
 // ─── Internal helpers ─────────────────────────────────────────────────────────
@@ -241,4 +310,36 @@ function refreshProfileInBackground(authUid: string): void {
         .catch((err) => {
             console.warn('[authService] Background profile refresh failed:', err);
         });
+}
+
+/**
+ * Retry the profile fetch every 20s until it succeeds once — used after a
+ * minimal-profile offline boot so the real display name appears as soon as
+ * connectivity returns, without the user doing anything.
+ */
+function refreshProfileWhenPossible(authUid: string): void {
+    let attempts = 0;
+    const MAX_ATTEMPTS = 30; // ~10 minutes, then give up until next launch
+
+    const tick = (): void => {
+        attempts += 1;
+        fetchUserRow(authUid)
+            .then(async (row) => {
+                if (!row) return; // row genuinely absent — nothing to restore
+                const user = mapRowToDomain(row);
+                await writeCachedUser(user);
+                const { useAuthStore } = await import('../stores/authStore');
+                const current = useAuthStore.getState().deviceUser;
+                if (current && current.id === authUid) {
+                    useAuthStore.setState({ deviceUser: user });
+                }
+            })
+            .catch(() => {
+                if (attempts < MAX_ATTEMPTS) {
+                    setTimeout(tick, 20_000);
+                }
+            });
+    };
+
+    setTimeout(tick, 5_000);
 }

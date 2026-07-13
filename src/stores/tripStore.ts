@@ -1,23 +1,27 @@
 /**
  * tripStore.ts
  *
- * Zustand store for trip state and the offline expense queue.
+ * Zustand store for trip state and the offline mutation queue.
  *
- * Persistence strategy:
- *  - Trip ID list → AsyncStorage "settravo:joined_trip_ids"
- *  - Offline queue → AsyncStorage "settravo:offline_queue"
- *  - Dead-letter queue → AsyncStorage "settravo:dead_letter_queue"
- *  - Full trip objects are NOT persisted locally — re-fetched on launch.
- *    Only IDs are persisted so we know what to fetch.
+ * Phase-3 persistence strategy:
+ *  - Full trip objects → SQLite local cache (write-through in setTrips /
+ *    addTrip, hydrated by hydrateTripsFromCache on boot). The old
+ *    "IDs only, refetch everything" model is what made offline launches empty.
+ *  - Trip ID list → AsyncStorage (kept for backwards compatibility and as a
+ *    lightweight signal of membership).
+ *  - Offline queue + dead-letter queue → AsyncStorage (unchanged, validated
+ *    with OfflineQueueItemSchema on load).
  *
- * Offline queue integrity:
- *  - loadOfflineQueue validates each item with OfflineQueueItemSchema.
- *  - Invalid items are dropped to dead-letter rather than crashing the replay loop.
- *  - Items that fail OFFLINE_MAX_RETRIES times are moved to dead-letter.
+ * Phase-3 dead-letter UX:
+ *  - retryDeadLetterItem: moves an item back into the live queue with a
+ *    fresh retry budget (user-initiated from the sync banner).
+ *  - discardDeadLetterItem: drops it permanently (user acknowledged).
+ *    Failed syncs are now VISIBLE and actionable, never silent.
  */
 
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { create } from 'zustand';
+import { cacheExpenseWithSplits, cacheTrip, cacheTrips, readCachedTrips, removeCachedTrip } from '../lib/localCache';
 import type { DeadLetterItem, OfflineQueueItem, Trip } from '../types/domain';
 import { OfflineQueueItemSchema } from '../validation/schemas';
 
@@ -30,6 +34,8 @@ interface TripState {
     joinedTripIds: string[];
     isLoading: boolean;
     hasFetched: boolean;
+    /** True once trips were hydrated from the local cache this session. */
+    hasHydratedFromCache: boolean;
     activeTripId: string | null;
     offlineQueue: OfflineQueueItem[];
     deadLetterQueue: DeadLetterItem[];
@@ -41,19 +47,16 @@ interface TripState {
     setLoading: (loading: boolean) => void;
     setHasFetched: (v: boolean) => void;
     loadJoinedIds: () => Promise<void>;
+    /** Instant offline hydration from SQLite — call before any network fetch. */
+    hydrateTripsFromCache: () => void;
     enqueueOfflineItem: (item: OfflineQueueItem) => Promise<void>;
     dequeueOfflineItem: (localId: string) => Promise<void>;
-    /**
-     * Increment retryCount and update lastFailedAt for an item.
-     * Called by useOfflineSync when a replay attempt fails but hasn't
-     * yet exceeded OFFLINE_MAX_RETRIES.
-     */
     updateOfflineItemRetry: (localId: string, newRetryCount: number, failedAt: string) => Promise<void>;
-    /**
-     * Move a failed item from the live queue to the dead-letter queue.
-     * Called by useOfflineSync when retryCount >= OFFLINE_MAX_RETRIES.
-     */
     addDeadLetterItem: (item: DeadLetterItem) => Promise<void>;
+    /** Move a dead-letter item back to the live queue with a fresh retry budget. */
+    retryDeadLetterItem: (localId: string) => Promise<void>;
+    /** Permanently drop a dead-letter item (user acknowledged the failure). */
+    discardDeadLetterItem: (localId: string) => Promise<void>;
     loadOfflineQueue: () => Promise<void>;
     loadDeadLetterQueue: () => Promise<void>;
 }
@@ -63,11 +66,16 @@ export const useTripStore = create<TripState>((set, get) => ({
     joinedTripIds: [],
     isLoading: false,
     hasFetched: false,
+    hasHydratedFromCache: false,
     activeTripId: null,
     offlineQueue: [],
     deadLetterQueue: [],
 
-    setTrips: (trips) => set({ trips }),
+    setTrips: (trips) => {
+        set({ trips });
+        // Write-through: the cache always mirrors the last known-good list.
+        cacheTrips(trips);
+    },
 
     addTrip: async (trip) => {
         const { joinedTripIds, trips } = get();
@@ -75,6 +83,7 @@ export const useTripStore = create<TripState>((set, get) => ({
         const newIds = [...joinedTripIds, trip.id];
         const newTrips = [...trips, trip];
         set({ joinedTripIds: newIds, trips: newTrips });
+        cacheTrip(trip);
         await persistJoinedIds(newIds);
     },
 
@@ -83,6 +92,7 @@ export const useTripStore = create<TripState>((set, get) => ({
         const newIds = joinedTripIds.filter((id) => id !== tripId);
         const newTrips = trips.filter((t) => t.id !== tripId);
         set({ joinedTripIds: newIds, trips: newTrips });
+        removeCachedTrip(tripId);
         await persistJoinedIds(newIds);
     },
 
@@ -102,10 +112,51 @@ export const useTripStore = create<TripState>((set, get) => ({
         }
     },
 
+    hydrateTripsFromCache: () => {
+        if (get().hasHydratedFromCache) return;
+        const cached = readCachedTrips();
+        set((s) => ({
+            hasHydratedFromCache: true,
+            // Never clobber fresher network data with the cache: only apply
+            // when the in-memory list is still empty.
+            trips: s.trips.length === 0 ? cached : s.trips,
+        }));
+    },
+
     enqueueOfflineItem: async (item) => {
         const { offlineQueue } = get();
         const newQueue = [...offlineQueue, item];
         set({ offlineQueue: newQueue });
+
+        // Write-through for offline adds: reconstruct the optimistic expense
+        // (same shape the screen inserted into expenseStore) into the SQLite
+        // cache under its localId, so it SURVIVES an app relaunch while
+        // offline. useOfflineSync swaps localId → server row on replay.
+        if (item.type === 'ADD_EXPENSE') {
+            const nowIso = new Date().toISOString();
+            cacheExpenseWithSplits(
+                item.payload.tripId,
+                {
+                    id: item.localId,
+                    tripId: item.payload.tripId,
+                    paidByMember: item.payload.paidByMember,
+                    title: item.payload.title,
+                    category: item.payload.category ?? null,
+                    amountMoney: item.payload.amountMoney,
+                    createdAt: nowIso,
+                    updatedAt: nowIso,
+                    isPendingSync: true,
+                },
+                item.splits.map((s, i) => ({
+                    id: `${item.localId}:${i}`,
+                    expenseId: item.localId,
+                    memberId: s.memberId,
+                    shareMoney: s.shareMoney,
+                    isSettled: false,
+                })),
+            );
+        }
+
         await persistOfflineQueue(newQueue);
     },
 
@@ -130,6 +181,31 @@ export const useTripStore = create<TripState>((set, get) => ({
     addDeadLetterItem: async (item) => {
         const { deadLetterQueue } = get();
         const newDL = [...deadLetterQueue, item];
+        set({ deadLetterQueue: newDL });
+        await persistDeadLetterQueue(newDL);
+    },
+
+    retryDeadLetterItem: async (localId) => {
+        const { deadLetterQueue, offlineQueue } = get();
+        const item = deadLetterQueue.find((i) => i.localId === localId);
+        if (!item) return;
+
+        const { failureReason: _dropped, ...queueItem } = item;
+        const revived: OfflineQueueItem = {
+            ...(queueItem as OfflineQueueItem),
+            retryCount: 0,
+            lastFailedAt: null,
+        };
+
+        const newDL = deadLetterQueue.filter((i) => i.localId !== localId);
+        const newQueue = [...offlineQueue, revived];
+        set({ deadLetterQueue: newDL, offlineQueue: newQueue });
+        await Promise.all([persistDeadLetterQueue(newDL), persistOfflineQueue(newQueue)]);
+    },
+
+    discardDeadLetterItem: async (localId) => {
+        const { deadLetterQueue } = get();
+        const newDL = deadLetterQueue.filter((i) => i.localId !== localId);
         set({ deadLetterQueue: newDL });
         await persistDeadLetterQueue(newDL);
     },

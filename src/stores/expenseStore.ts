@@ -9,40 +9,28 @@
  *  - Realtime patches are applied here via applyExpensePatch /
  *    applySplitPatch — screens never touch realtime payloads directly.
  *  - Optimistic updates: when a user adds an expense offline a local
- *    placeholder (isPendingSync=true) is inserted immediately.  On sync
+ *    placeholder (isPendingSync=true) is inserted immediately. On sync
  *    success confirmExpense swaps it for the real server row.
  *  - Settlement data is NEVER stored — always computed on demand.
  *
- * Fix v3:
- *  - pendingLocalIds: tracks localIds currently in-flight so the realtime
- *    INSERT handler can suppress the duplicate that arrives after confirmExpense
- *    has already swapped the row. Without this, the sequence is:
- *      1. addExpenseOptimistic(localId)  → row appears
- *      2. server INSERT fires realtime   → applyExpensePatch sees new server id,
- *         no existing row matches, inserts AGAIN → duplicate visible until refresh
- *      3. confirmExpense(localId, serverRow) → replaces localId row
- *    With pendingLocalIds tracked per tripId the INSERT handler checks whether
- *    the incoming server row's created_at is within the current session before
- *    inserting, and confirmExpense clears the flag.
- *  - setSplitSettled: new action for optimistic mark-as-paid so settle.tsx
- *    does not have to wait for the realtime round-trip before reflecting the
- *    change in settledMap.
- */
-
-/**
- * expenseStore.ts
+ * v4 (kept):
+ *  - confirmedServerIds: tracks server IDs returned by confirmExpense so the
+ *    subsequent realtime INSERT echo is recognised as a duplicate and dropped.
  *
- * Fix v4:
- *  - confirmedServerIds: tracks server IDs returned by confirmExpense so that
- *    the subsequent realtime INSERT echo is recognised as a duplicate and dropped.
- *    This eliminates the "add expense shows duplicate" bug.
- *  - setSplitSettled: optimistic mark-as-paid for settle screen.
+ * Phase-2 change:
+ *  - setSplitSettled (guess-based optimistic flip over a screen-computed
+ *    expense-id list) is REMOVED. It was the source of local/server drift:
+ *    the screen flipped one set of rows, the RPC flipped another.
+ *  - applyServerSplits replaces it: upserts the EXACT rows returned by
+ *    settravo_settle_pair. What the server changed is what the store shows —
+ *    nothing more, nothing less. Realtime echoes of the same rows are
+ *    idempotent (upsert by id).
  */
 
 import type { RealtimePostgresChangesPayload } from '@supabase/supabase-js';
 import { create } from 'zustand';
 import type { Expense, Split } from '../types/domain';
-import { fetchAllSplitsForTrip, fetchExpenses } from '@/services/expenseService';
+import { fetchAllSplitsForTrip, fetchExpenses } from '../services/expenseService';
 
 interface ExpenseState {
     expenses: Record<string, Expense[]>;
@@ -54,8 +42,6 @@ interface ExpenseState {
      * confirmedServerIds[tripId] → Set of server-assigned expense IDs that have
      * been confirmed via confirmExpense(). The realtime INSERT for these IDs
      * arrives shortly after and must be dropped to prevent duplicates.
-     * Each ID is removed from the set after the echo is consumed or after a
-     * short TTL (handled on INSERT dedup path).
      */
     confirmedServerIds: Record<string, Set<string>>;
 
@@ -65,9 +51,25 @@ interface ExpenseState {
     confirmExpense: (tripId: string, localId: string, confirmed: Expense) => void;
     removeExpense: (tripId: string, expenseId: string) => void;
     setLoading: (v: boolean) => void;
-    setSplitSettled: (expenseIds: string[], memberId: string, settled: boolean) => void;
-    applyExpensePatch: (tripId: string, payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => void;
-    applySplitPatch: (payload: RealtimePostgresChangesPayload<Record<string, unknown>>) => void;
+    setHasFetched: (tripId: string, v: boolean) => void;
+    /**
+     * Batch-load expenses + splits for a trip once (used by the cross-trip
+     * activity feed). No-op if this trip was already fetched this session.
+     */
+    loadExpenses: (tripId: string) => Promise<void>;
+    /**
+     * Upsert split rows exactly as returned by the server (settle RPC or a
+     * fetch). Rows are matched by id within their expense bucket. This is
+     * the ONLY sanctioned way to reflect settle-state changes locally.
+     */
+    applyServerSplits: (updated: Split[]) => void;
+    applyExpensePatch: (
+        tripId: string,
+        payload: RealtimePostgresChangesPayload<Record<string, unknown>>,
+    ) => void;
+    applySplitPatch: (
+        payload: RealtimePostgresChangesPayload<Record<string, unknown>>,
+    ) => void;
 }
 
 function rowToExpense(row: Record<string, unknown>): Expense {
@@ -157,20 +159,29 @@ export const useExpenseStore = create<ExpenseState>((set, get) => ({
 
     setLoading: (v) => set({ isLoading: v }),
 
-    loadExpenses: async (tripId: string) => {
-        // Guard: don't re-fetch if already loading or fetched for this trip
-        const state = get();
-        if (state.hasFetched?.[tripId]) return;
+    setHasFetched: (tripId, v) =>
+        set((s) => ({ hasFetched: { ...s.hasFetched, [tripId]: v } })),
 
-        set((s) => ({ isLoading: true }));
+    loadExpenses: async (tripId) => {
+        // Guard: don't re-fetch if already fetched for this trip this session
+        if (get().hasFetched[tripId]) return;
+
+        set({ isLoading: true });
         try {
             const [expenses, splits] = await Promise.all([
                 fetchExpenses(tripId),
                 fetchAllSplitsForTrip(tripId),
             ]);
+
+            // Index splits by expenseId so buckets replace atomically
+            const byExpense: Record<string, Split[]> = {};
+            for (const split of splits) {
+                (byExpense[split.expenseId] ??= []).push(split);
+            }
+
             set((s) => ({
                 expenses: { ...s.expenses, [tripId]: expenses },
-                splits: { ...s.splits, [tripId]: splits },
+                splits: { ...s.splits, ...byExpense },
                 hasFetched: { ...s.hasFetched, [tripId]: true },
                 isLoading: false,
             }));
@@ -179,16 +190,17 @@ export const useExpenseStore = create<ExpenseState>((set, get) => ({
         }
     },
 
-    setSplitSettled: (expenseIds, memberId, settled) =>
+    applyServerSplits: (updated) =>
         set((s) => {
-            const updatedSplits = { ...s.splits };
-            for (const expenseId of expenseIds) {
-                const existing = updatedSplits[expenseId] ?? [];
-                updatedSplits[expenseId] = existing.map((sp) =>
-                    sp.memberId === memberId ? { ...sp, isSettled: settled } : sp,
-                );
+            if (updated.length === 0) return s;
+
+            const nextSplits = { ...s.splits };
+            for (const split of updated) {
+                const bucket = nextSplits[split.expenseId] ?? [];
+                const without = bucket.filter((sp) => sp.id !== split.id);
+                nextSplits[split.expenseId] = [...without, split];
             }
-            return { splits: updatedSplits };
+            return { splits: nextSplits };
         }),
 
     applyExpensePatch: (tripId, payload) =>
